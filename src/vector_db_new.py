@@ -1,20 +1,16 @@
 # 在 vector_db.py 文件顶部添加导入
-import pandas as pd
 from pptx import Presentation
 from langchain_core.documents import Document
 
-from transformers import BlipProcessor, BlipForConditionalGeneration
 from PIL import Image
-import io
 import functools
 import hashlib
 
 from unstructured.partition.auto import partition  # 自动分区函数
-from unstructured.chunking.title import chunk_by_title  # 可选：按标题分块
 from unstructured.documents.elements import Element, Text, Table, Image
 from dashscope import MultiModalConversation
+from collections import defaultdict
 
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
@@ -51,8 +47,8 @@ def load_embedding_model():
 
 def create_parent_child_docs(file_path):
     """从文件生成父子文档对，返回 (child_docs, parent_docs)"""
-    # 先调用 load_with_unstructured 获取已处理的文档（含图片描述）
-    parent_docs = load_with_unstructured(file_path)
+    # 先调用 load_and_aggregate_docs 获取已处理的文档（含图片描述）
+    parent_docs = load_and_aggregate_docs(file_path)
     if parent_docs is None:
         # 如果 Unstructured 失败，回退到手动方法（例如 load_ppt_doc/load_excel_doc）
         # 这里需要你根据文件类型实现回退
@@ -143,8 +139,6 @@ def load_with_unstructured(file_path, use_blip=True):
             image_caption_func = load_vision_model()
             image_path = element.metadata.get('image_path')
             if image_path and os.path.exists(image_path):
-                with open(image_path, 'rb') as f:
-                    image_bytes = f.read()
                 desc = image_caption_func(image_path)
                 if desc and desc != "[图片无法描述]":
                     content = desc
@@ -168,15 +162,97 @@ def load_with_unstructured(file_path, use_blip=True):
     #     print(f"Unstructured 解析失败 {file_path}：{str(e)}，回退到手动方法")
     #     return None  # 返回 None 表示需要回退
     
-# @functools.lru_cache(maxsize=1)
-# def load_vision_model():
-#     """从本地加载BLIP图像描述模型"""
-#     if not os.path.exists(LOCAL_BLIP_PATH):
-#         raise FileNotFoundError(f"模型未找到，请先下载到 {LOCAL_BLIP_PATH}")
-#     processor = BlipProcessor.from_pretrained(LOCAL_BLIP_PATH)
-#     model = BlipForConditionalGeneration.from_pretrained(LOCAL_BLIP_PATH)
-#     return processor, model
+def aggregate_docs_by_page(docs: list[Document]) -> list[Document]:
+    """
+    将按元素解析的文档列表，按页码聚合为按页的父文档。
+    适用于 PPT, PDF, Word 等有页码概念的文档。
+    """
+    # 按页码分组
+    page_groups = defaultdict(list)
+    for doc in docs:
+        # 从你的元数据中获取页码
+        page_num = doc.metadata.get("unstructured_page_number", 0)
+        page_groups[page_num].append(doc)
 
+    # 生成按页聚合的父文档
+    aggregated_docs = []
+    for page_num in sorted(page_groups.keys()):
+        doc_list = page_groups[page_num]
+        # 合并当前页所有元素的内容
+        full_content = "\n".join([doc.page_content for doc in doc_list])
+        # 使用第一个文档的元数据作为基础，更新页码和内容
+        base_metadata = doc_list[0].metadata.copy()
+        base_metadata.update({
+            "page_number": page_num,  # 简化的页码字段
+            "aggregated": True,       # 标记为聚合后的父文档
+            "original_elements_count": len(doc_list)  # 记录合并了多少个原始元素
+        })
+        aggregated_docs.append(Document(page_content=full_content, metadata=base_metadata))
+    
+    return aggregated_docs
+
+def aggregate_excel_docs(docs: list[Document], chunk_size: int = 10) -> list[Document]:
+    """
+    将按单元格解析的Excel文档列表，按行数聚合为带表头的小文档块。
+    :param docs: 原始解析的文档列表，每个单元格一个Document。
+    :param chunk_size: 每个块包含的数据行数（不含表头）。
+    :return: 聚合后的父文档列表。
+    """
+    if not docs:
+        return []
+
+    # 假设第一行是表头（Excel解析时，第一行的单元格会被优先解析）
+    # 这里通过位置来判断，你可能需要根据实际情况调整
+    header_docs = [docs[0]] if len(docs) > 0 else []
+    data_docs = docs[1:] if len(docs) > 1 else []
+    
+    # 如果没有数据，只返回表头
+    if not data_docs:
+        header_content = "\n".join([doc.page_content for doc in header_docs])
+        return [Document(page_content=header_content, metadata=header_docs[0].metadata.copy())]
+
+    # 提取表头内容
+    header_content = "\n".join([doc.page_content for doc in header_docs])
+    aggregated_docs = []
+
+    # 按chunk_size分块处理数据行
+    for i in range(0, len(data_docs), chunk_size):
+        chunk = data_docs[i:i + chunk_size]
+        # 合并当前块的数据内容
+        chunk_content = "\n".join([doc.page_content for doc in chunk])
+        # 将表头和数据内容合并
+        full_content = f"{header_content}\n{chunk_content}"
+        # 使用块中第一个文档的元数据作为基础
+        base_metadata = chunk[0].metadata.copy()
+        base_metadata.update({
+            "aggregated": True,
+            "chunk_size": chunk_size,
+            "row_start": i + 2,  # 数据行从第2行开始（表头是第1行）
+            "row_end": min(i + chunk_size + 1, len(data_docs) + 1)
+        })
+        aggregated_docs.append(Document(page_content=full_content, metadata=base_metadata))
+    
+    return aggregated_docs
+
+def load_and_aggregate_docs(file_path: str, use_blip: bool = True) -> list[Document]:
+    """
+    加载文件并根据文件类型进行智能聚合，生成适合作为父文档的列表。
+    这是你应该在主流程中调用的函数。
+    """
+    # 第一步：使用你原有的函数进行精细解析
+    raw_docs = load_with_unstructured(file_path, use_blip=use_blip)
+    
+    # 第二步：根据文件后缀名选择聚合策略
+    if file_path.lower().endswith((".pdf", ".pptx", ".docx", ".doc")):
+        # PPT/PDF/Word：按页聚合
+        return aggregate_docs_by_page(raw_docs)
+    elif file_path.lower().endswith((".xlsx", ".xls")):
+        # Excel：按行块聚合，保留表头
+        return aggregate_excel_docs(raw_docs, chunk_size=10)
+    else:
+        # 其他文件类型：返回原始解析结果，不做聚合
+        return raw_docs
+    
 @functools.lru_cache(maxsize=1)
 def load_vision_model():
     """
@@ -204,20 +280,6 @@ def load_vision_model():
     
     return image_caption
 
-# 定义生成图像描述的函数（使用BLIP模型）
-# def generate_image_description(image_bytes):
-#     """根据图片字节数据生成文本描述"""
-#     try:
-#         processor, model = load_vision_model()
-#         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-#         inputs = processor(image, return_tensors="pt")
-#         out = model.generate(**inputs, max_length=50)
-#         description = processor.decode(out[0], skip_special_tokens=True)
-#         return description
-#     except Exception as e:
-#         print(f"图像描述生成失败：{str(e)}")
-#         return "[图片无法描述]"
-    
 # 3. 文本分割配置
 TEXT_SPLITTER = RecursiveCharacterTextSplitter(
     chunk_size=1000,
@@ -252,28 +314,8 @@ def get_local_docs_info():
 def load_single_doc(file_path):
     """
     加载单个文档，返回分割后的文档列表。
-    优先使用 Unstructured，失败则回退到手动方法。
     """
-    # 对 PPT 和 Excel 优先用 Unstructured
-    if file_path.endswith(('.pptx', '.xlsx', ".docx")):
-        docs = load_with_unstructured(file_path)
-        if docs is not None:
-            # 对 Unstructured 返回的元素块，可能还需要进一步切分（如果块太大）
-            # 但 Unstructured 的 chunk_by_title 可以按标题聚合，我们直接返回元素即可
-            return docs
-        else:
-            return []  # Unstructured 解析失败且没有回退方法，返回空列表
-
-    # 对于 PDF/TXT，也可以尝试 Unstructured（更智能），但保留原有方法作为备选
-    elif file_path.endswith('.pdf'):
-        # 可以先用 Unstructured 试试，失败再用 PyPDFLoader
-        docs = load_with_unstructured(file_path)
-        if docs is not None:
-            return docs
-        else:
-            return []  # Unstructured 解析失败且没有回退方法，返回空列表
-
-    elif file_path.endswith('.txt'):
+    if file_path.endswith('.txt'):
         # 文本文件继续用原有方法（Unstructured 对纯文本处理类似）
         loader = TextLoader(file_path, encoding="utf-8")
         docs = loader.load()
@@ -457,7 +499,9 @@ def init_or_load_vector_db():
     #     # 返回空向量库，避免程序崩溃
     #     return Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
 
-def init_vector_db():
+
+def get_vector_db():
+    """获取全局向量库实例（确保已初始化）"""
     global _global_vector_db
     if _global_vector_db is None:
         _global_vector_db = init_or_load_vector_db()
@@ -465,7 +509,3 @@ def init_vector_db():
     else:
         print("【向量库实例已存在】直接使用")
     return _global_vector_db
-
-def get_vector_db():
-    """获取全局向量库实例（确保已初始化）"""
-    return init_vector_db()
