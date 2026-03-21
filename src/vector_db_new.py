@@ -1,0 +1,434 @@
+# 在 vector_db.py 文件顶部添加导入
+import pandas as pd
+from pptx import Presentation
+from langchain_core.documents import Document
+
+from transformers import BlipProcessor, BlipForConditionalGeneration
+from PIL import Image
+import io
+import functools
+import hashlib
+
+from unstructured.partition.auto import partition  # 自动分区函数
+from unstructured.chunking.title import chunk_by_title  # 可选：按标题分块
+from unstructured.documents.elements import Element, Text, Table, Image
+
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_community.embeddings import DashScopeEmbeddings
+from langchain_classic.storage import LocalFileStore
+import pickle
+import os
+import time
+import gc
+from datetime import datetime
+# ====================== 全局配置（新手只需改这里） ======================
+# 1. 本地文档文件夹（存放所有TBOX文档，支持PDF/TXT）
+TBOX_DOCS_DIR = "./tbox_docs"  # 可改成你的实际路径，如"D:/seki/AI/TBOX文档"
+# 2. 向量库保存路径
+PERSIST_DIR = "./tbox_vector_db"
+
+# 定义本地模型路径
+LOCAL_BLIP_PATH = "./models/blip-image-captioning-base"  # 与你下载的路径一致
+
+# 定义“单例”向量库实例（初始为None）
+_global_vector_db = None
+
+def _get_path_hash(file_path: str) -> str:
+    """返回文件路径的 MD5 哈希值（安全字符串）"""
+    return hashlib.md5(file_path.encode('utf-8')).hexdigest()
+
+# 嵌入模型配置（阿里云百炼）
+def load_embedding_model():
+    return DashScopeEmbeddings(
+        model="text-embedding-v4",
+        dashscope_api_key="sk-10579025107e412983a48273c2ff7d3f"
+    )
+
+def create_parent_child_docs(file_path):
+    """从文件生成父子文档对，返回 (child_docs, parent_docs)"""
+    # 先调用 load_with_unstructured 获取已处理的文档（含图片描述）
+    parent_docs = load_with_unstructured(file_path)
+    if parent_docs is None:
+        # 如果 Unstructured 失败，回退到手动方法（例如 load_ppt_doc/load_excel_doc）
+        # 这里需要你根据文件类型实现回退
+        return [], []
+
+    child_docs = []
+    child_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
+    file_hash = _get_path_hash(file_path)  # 生成文件路径哈希值，用于 parent_id，避免特殊字符问题
+
+    for idx, parent_doc in enumerate(parent_docs):
+        # 为父块生成唯一 parent_id
+        parent_id = f"{file_hash}__{idx}"   # 哈希值+索引，仅含字母/数字/__（__是合法的，因为哈希无非法字符）
+        parent_doc.metadata["parent_id"] = parent_id
+
+        # 切分子块
+        children = child_splitter.split_documents([parent_doc])
+        for child in children:
+            child.metadata["parent_id"] = parent_id
+            child_docs.append(child)
+
+    return child_docs, parent_docs
+
+def get_all_parent_docs(store_dir: str = "./parent_store"):
+    """从本地存储中加载所有父文档，返回 Document 列表"""
+    store = LocalFileStore(store_dir)
+    parent_docs = []
+    for key in store.yield_keys():
+        data = store.mget([key])[0]
+        if data:
+            doc = pickle.loads(data)
+            parent_docs.append(doc)
+    return parent_docs
+
+def load_file_to_parent_child(file_path):
+    """根据文件类型返回 (child_docs, parent_docs)"""
+    if file_path.endswith((".pdf",'.pptx', '.xlsx', ".docx")):
+        return create_parent_child_docs(file_path)
+    else:
+        # TXT：使用原有加载方式，每个块同时作为父块和子块
+        docs = load_single_doc(file_path)  # 返回 Document 列表
+        child_docs = docs
+        parent_docs = docs
+        file_hash = _get_path_hash(file_path)
+        # 为每个文档生成 parent_id（如果需要）
+        for i, doc in enumerate(parent_docs):
+            doc.metadata["parent_id"] = f"{file_hash}__{i}"
+        return child_docs, parent_docs
+    
+# 定义统一的 Unstructured 加载函数（支持自动分区和图片描述）
+def load_with_unstructured(file_path, use_blip=True):
+    """
+    使用 Unstructured 解析文件，返回 Document 列表。
+    对 Image 元素调用 BLIP 生成描述。
+    """
+    try:
+        # 调用 unstructured 自动分区
+        elements = partition(filename=file_path)
+        docs = []
+
+        # 遍历每个元素
+        for idx, element in enumerate(elements):
+            # 基本元数据
+            metadata = {
+                "file_name": os.path.basename(file_path),
+                "file_mtime": os.path.getmtime(file_path),
+                "file_path": file_path,
+                "element_index": idx,
+                "element_type": type(element).__name__,  # 例如 "Title", "Table", "Image"
+            }
+
+            # 合并 Unstructured 自动提取的元数据（如页码）
+            if hasattr(element, 'metadata'):
+                for key, value in element.metadata.to_dict().items():
+                    metadata[f"unstructured_{key}"] = value
+
+            # 获取元素文本内容
+            content = element.text or ""
+
+            # 如果是图片元素且开启了 BLIP
+            if use_blip and isinstance(element, Image):
+                # 尝试从 metadata 中获取图片二进制数据
+                # Unstructured 的 Image 元素通常会将图片保存为临时文件，路径在 metadata['image_path']
+                image_path = element.metadata.get('image_path')
+                if image_path and os.path.exists(image_path):
+                    with open(image_path, 'rb') as f:
+                        image_bytes = f.read()
+                    desc = generate_image_description(image_bytes)
+                    if desc and desc != "[图片无法描述]":
+                        content = desc
+                        metadata["generated_description"] = True
+                else:
+                    # 无法获取图片数据，保留原内容（可能为空）
+                    pass
+
+            # 如果内容为空则跳过（除非是表格但无文本？表格元素一般有文本）
+            if not content.strip():
+                continue
+
+            # 创建 Document 对象
+            doc = Document(page_content=content.strip(), metadata=metadata)
+            docs.append(doc)
+
+        return docs
+    except Exception as e:
+        print(f"Unstructured 解析失败 {file_path}：{str(e)}，回退到手动方法")
+        return None  # 返回 None 表示需要回退
+    
+@functools.lru_cache(maxsize=1)
+def load_vision_model():
+    """从本地加载BLIP图像描述模型"""
+    if not os.path.exists(LOCAL_BLIP_PATH):
+        raise FileNotFoundError(f"模型未找到，请先下载到 {LOCAL_BLIP_PATH}")
+    processor = BlipProcessor.from_pretrained(LOCAL_BLIP_PATH)
+    model = BlipForConditionalGeneration.from_pretrained(LOCAL_BLIP_PATH)
+    return processor, model
+
+# 定义生成图像描述的函数（使用BLIP模型）
+def generate_image_description(image_bytes):
+    """根据图片字节数据生成文本描述"""
+    try:
+        processor, model = load_vision_model()
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        inputs = processor(image, return_tensors="pt")
+        out = model.generate(**inputs, max_length=50)
+        description = processor.decode(out[0], skip_special_tokens=True)
+        return description
+    except Exception as e:
+        print(f"图像描述生成失败：{str(e)}")
+        return "[图片无法描述]"
+    
+# 3. 文本分割配置
+TEXT_SPLITTER = RecursiveCharacterTextSplitter(
+    chunk_size=1000,
+    chunk_overlap=200,
+    separators=["\n\n", "\n", "。", "！", "？", "，", "、", " ", "."],
+)
+
+EMBEDDINGS = load_embedding_model()  # 加载嵌入模型（包含路径处理和错误提示）
+
+def init_docs_dir():
+    """初始化本地文档文件夹（不存在则创建）"""
+    if not os.path.exists(TBOX_DOCS_DIR):
+        os.makedirs(TBOX_DOCS_DIR)
+        print(f"✅ 已创建本地文档文件夹：{TBOX_DOCS_DIR}，请将TBOX文档放入该目录")
+
+def get_local_docs_info():
+    """获取本地文档文件夹的文件信息（文件名+修改时间）"""
+    init_docs_dir()
+    docs_info = {}
+    for file in os.listdir(TBOX_DOCS_DIR):
+        if file.endswith((".pdf", ".txt", ".pptx", ".xlsx", ".docx")):  # 支持PPT和Excel
+            file_path = os.path.join(TBOX_DOCS_DIR, file)
+            # 获取文件修改时间（时间戳，用于检测变更）
+            mtime = os.path.getmtime(file_path)
+            docs_info[file] = {
+                "path": file_path,
+                "mtime": mtime,
+                "mtime_str": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+            }
+    return docs_info
+
+def load_single_doc(file_path):
+    """
+    加载单个文档，返回分割后的文档列表。
+    优先使用 Unstructured，失败则回退到手动方法。
+    """
+    # 对 PPT 和 Excel 优先用 Unstructured
+    if file_path.endswith(('.pptx', '.xlsx', ".docx")):
+        docs = load_with_unstructured(file_path)
+        if docs is not None:
+            # 对 Unstructured 返回的元素块，可能还需要进一步切分（如果块太大）
+            # 但 Unstructured 的 chunk_by_title 可以按标题聚合，我们直接返回元素即可
+            return docs
+        else:
+            return []  # Unstructured 解析失败且没有回退方法，返回空列表
+
+    # 对于 PDF/TXT，也可以尝试 Unstructured（更智能），但保留原有方法作为备选
+    elif file_path.endswith('.pdf'):
+        # 可以先用 Unstructured 试试，失败再用 PyPDFLoader
+        docs = load_with_unstructured(file_path)
+        if docs is not None:
+            return docs
+        else:
+            return []  # Unstructured 解析失败且没有回退方法，返回空列表
+
+    elif file_path.endswith('.txt'):
+        # 文本文件继续用原有方法（Unstructured 对纯文本处理类似）
+        loader = TextLoader(file_path, encoding="utf-8")
+        docs = loader.load()
+        split_docs = TEXT_SPLITTER.split_documents(docs)
+        mtime = os.path.getmtime(file_path)
+        for doc in split_docs:
+            doc.metadata.update({
+                "file_name": os.path.basename(file_path),
+                "file_mtime": mtime,
+                "file_path": file_path,
+                "doc_type": "txt"
+            })
+        return split_docs
+
+    else:
+        return []
+    
+def diff_update_vector_db():
+    """
+    差分更新向量库（核心！只处理增/删/改的文件）
+    逻辑：
+    1. 对比本地文件 vs 向量库中的文件；
+    2. 删除：向量库有但本地没有的文件 → 删对应向量；
+    3. 修改：本地文件修改时间 > 向量库中的 → 先删旧向量，再插新向量；
+    4. 新增：本地有但向量库没有的文件 → 插新向量；
+    """
+    start_time = time.time()
+    print("🔍 开始差分更新向量库...")
+    
+    # 1. 获取本地文件信息和向量库
+    local_docs = get_local_docs_info()
+    vector_db = Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
+    # 获取向量库中的文件信息
+    db_docs = vector_db.get()
+    db_file_info = {}
+    for idx, meta in enumerate(db_docs["metadatas"]):
+        if "file_name" in meta:
+            file_name = meta["file_name"]
+            file_mtime = meta.get("file_mtime", 0)
+            if file_name not in db_file_info or file_mtime > db_file_info[file_name]:
+                db_file_info[file_name] = file_mtime
+
+    # 初始化 docstore（父块存储）
+    parent_store_dir = "./parent_store"
+    store = LocalFileStore(parent_store_dir)
+    
+    # 3. 第一步：删除向量库中已不存在的文件
+    deleted_files = [f for f in db_file_info if f not in local_docs]
+    if deleted_files:
+        print(f"🗑️ 检测到已删除的文件：{deleted_files}")
+        for file_name in deleted_files:
+            # 找到该文件对应的所有向量ID并删除
+            del_ids = [db_docs["ids"][i] for i, meta in enumerate(db_docs["metadatas"]) 
+                       if meta.get("file_name") == file_name]
+            if del_ids:
+                vector_db.delete(ids=del_ids)
+            file_path = None
+            keys_to_delete = []
+            for key in store.yield_keys():
+                if key.startswith(file_name):  # 不准确，因为 file_name 可能不包含路径
+                    keys_to_delete.append(key)
+            if keys_to_delete:
+                store.mdelete(keys_to_delete)
+        print(f"✅ 已删除{len(deleted_files)}个文件的向量和父块")
+    
+    # 4. 第二步：处理修改/新增的文件
+    updated_count = 0
+    added_count = 0
+    for file_name, file_info in local_docs.items():
+        file_path = file_info["path"]
+        local_mtime = file_info["mtime"]
+        
+        # 新增文件：向量库中没有
+        if file_name not in db_file_info:
+            print(f"➕ 新增文件：{file_name}")
+            # 生成父子文档
+            child_docs, parent_docs = load_file_to_parent_child(file_path)  # 需要实现此函数
+            if child_docs:
+                vector_db.add_documents(child_docs)
+                added_count += 1
+            # 将父块存入 docstore
+            for parent_doc in parent_docs:
+                parent_id = parent_doc.metadata.get("parent_id")
+                if parent_id:
+                    # 序列化并存储
+                    store.mset([(parent_id, pickle.dumps(parent_doc))])
+
+        # 修改文件：本地修改时间更新
+        elif local_mtime > db_file_info[file_name]:
+            print(f"🔄 修改文件：{file_name}")
+            # 先删旧向量
+            del_ids = [db_docs["ids"][i] for i, meta in enumerate(db_docs["metadatas"]) 
+                       if meta.get("file_name") == file_name]
+            if del_ids:
+                vector_db.delete(ids=del_ids)
+            # 再删旧父块
+            keys_to_delete = []
+            for key in store.yield_keys():
+                if key.startswith(file_path):
+                    keys_to_delete.append(key)
+            if keys_to_delete:
+                store.mdelete(keys_to_delete)
+            # 再插新向量
+            # 生成父子文档
+            child_docs, parent_docs = load_file_to_parent_child(file_path)  # 需要实现此函数
+            if child_docs:
+                vector_db.add_documents(child_docs)
+                updated_count += 1
+            # 将父块存入 docstore
+            for parent_doc in parent_docs:
+                parent_id = parent_doc.metadata.get("parent_id")
+                if parent_id:
+                    # 序列化并存储
+                    store.mset([(parent_id, pickle.dumps(parent_doc))])
+    
+    # 5. 保存向量库
+    # vector_db.persist()
+    cost_time = round(time.time() - start_time, 2)
+    print(f"""
+    ✅ 向量库差分更新完成！
+    - 新增文件：{added_count}个
+    - 修改文件：{updated_count}个
+    - 删除文件：{len(deleted_files)}个
+    - 耗时：{cost_time}秒
+    """)
+    # 清理内存
+    gc.collect()
+    global _global_vector_db
+    _global_vector_db = vector_db  # 更新全局实例
+    return vector_db
+
+# 初始化向量库的函数（首次全量，后续直接加载）
+def init_or_load_vector_db():
+    """初始化/加载向量库（首次全量，后续差分）"""
+    # try:
+    # 确保 docstore 目录存在
+    parent_store_dir = "./parent_store"
+    os.makedirs(parent_store_dir, exist_ok=True)
+    store = LocalFileStore(parent_store_dir)
+    if not os.path.exists(PERSIST_DIR) or len(os.listdir(PERSIST_DIR)) == 0:
+        print("📦 首次使用，全量构建向量库...")
+        local_docs = get_local_docs_info()
+        all_child_docs = []
+        # 用于存储父块，稍后统一存入 docstore
+        all_parent_docs = []
+        for file_name, file_info in local_docs.items():
+            print(f"📄 加载文件：{file_name}")
+            # 生成父子文档
+            child_docs, parent_docs = load_file_to_parent_child(file_info["path"])
+            all_child_docs.extend(child_docs)
+            all_parent_docs.extend(parent_docs)
+
+        if all_child_docs:
+            vector_db = Chroma(
+                collection_name="all_child_docs",
+                embedding_function=EMBEDDINGS,
+                persist_directory=PERSIST_DIR
+            )
+            # ========== 补充关键步骤：将子块添加到向量库 ==========
+            vector_db.add_documents(all_child_docs)
+            # vector_db.persist()
+            # 父块存入 docstore
+            # 使用字典批量存储以提高效率
+            parent_dict = {}
+            for parent in all_parent_docs:
+                parent_id = parent.metadata.get("parent_id")
+                if parent_id:
+                    parent_dict[parent_id] = pickle.dumps(parent)
+            if parent_dict:
+                store.mset(list(parent_dict.items()))
+            print(f"✅ 首次全量构建完成：子块{len(all_child_docs)}个，父块{len(all_parent_docs)}个")
+        else:
+            vector_db = Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
+            print("⚠️ 本地文档文件夹为空，向量库为空")
+    else:
+        vector_db = Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
+        print(f"✅ 加载已有向量库：{PERSIST_DIR}")
+    return vector_db
+    # except Exception as e:
+    #     print(f"向量库初始化失败：{str(e)}")
+    #     # 返回空向量库，避免程序崩溃
+    #     return Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
+
+def init_vector_db():
+    global _global_vector_db
+    if _global_vector_db is None:
+        _global_vector_db = init_or_load_vector_db()
+        print(f"【向量库初始化完成】当前文档数量：{len(_global_vector_db.get()['metadatas'])}")
+    else:
+        print("【向量库实例已存在】直接使用")
+    return _global_vector_db
+
+def get_vector_db():
+    """获取全局向量库实例（确保已初始化）"""
+    return init_vector_db()
