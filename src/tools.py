@@ -76,7 +76,7 @@ def create_rag_qa_tool(qa_chain):
     """创建RAG问答工具（依赖注入：qa_chain由外部传入）"""
     # 包装函数：适配工具的参数格式，内部调用rag_qa_chain
     def rag_qa_tool_wrapper(question: str) -> str:
-        from rag import rag_qa_chain
+        from rag_new import rag_qa_chain
         return rag_qa_chain(question, qa_chain)
     
     # 封装工具

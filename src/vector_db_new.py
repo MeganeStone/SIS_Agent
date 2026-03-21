@@ -12,6 +12,7 @@ import hashlib
 from unstructured.partition.auto import partition  # 自动分区函数
 from unstructured.chunking.title import chunk_by_title  # 可选：按标题分块
 from unstructured.documents.elements import Element, Text, Table, Image
+from dashscope import MultiModalConversation
 
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -19,6 +20,7 @@ from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.embeddings import DashScopeEmbeddings
 from langchain_classic.storage import LocalFileStore
+from langchain_community.vectorstores.utils import filter_complex_metadata
 import pickle
 import os
 import time
@@ -26,12 +28,12 @@ import gc
 from datetime import datetime
 # ====================== 全局配置（新手只需改这里） ======================
 # 1. 本地文档文件夹（存放所有TBOX文档，支持PDF/TXT）
-TBOX_DOCS_DIR = "./tbox_docs"  # 可改成你的实际路径，如"D:/seki/AI/TBOX文档"
+TBOX_DOCS_DIR = "../tbox_docs"  # 可改成你的实际路径，如"D:/seki/AI/TBOX文档"
 # 2. 向量库保存路径
-PERSIST_DIR = "./tbox_vector_db"
+PERSIST_DIR = "../tbox_vector_db"
 
 # 定义本地模型路径
-LOCAL_BLIP_PATH = "./models/blip-image-captioning-base"  # 与你下载的路径一致
+LOCAL_BLIP_PATH = "../models/blip-image-captioning-base"  # 与你下载的路径一致
 
 # 定义“单例”向量库实例（初始为None）
 _global_vector_db = None
@@ -63,6 +65,8 @@ def create_parent_child_docs(file_path):
     for idx, parent_doc in enumerate(parent_docs):
         # 为父块生成唯一 parent_id
         parent_id = f"{file_hash}__{idx}"   # 哈希值+索引，仅含字母/数字/__（__是合法的，因为哈希无非法字符）
+        # 递归地将复杂类型（如 dict、tuple、list 中的复杂元素）转换为可序列化的形式，并移除无法处理的类型。
+        parent_doc.metadata = filter_complex_metadata(parent_doc.metadata)
         parent_doc.metadata["parent_id"] = parent_id
 
         # 切分子块
@@ -73,7 +77,7 @@ def create_parent_child_docs(file_path):
 
     return child_docs, parent_docs
 
-def get_all_parent_docs(store_dir: str = "./parent_store"):
+def get_all_parent_docs(store_dir: str = "../parent_store"):
     """从本地存储中加载所有父文档，返回 Document 列表"""
     store = LocalFileStore(store_dir)
     parent_docs = []
@@ -96,6 +100,8 @@ def load_file_to_parent_child(file_path):
         file_hash = _get_path_hash(file_path)
         # 为每个文档生成 parent_id（如果需要）
         for i, doc in enumerate(parent_docs):
+            # 递归地将复杂类型（如 dict、tuple、list 中的复杂元素）转换为可序列化的形式，并移除无法处理的类型。
+            doc.metadata = filter_complex_metadata(doc.metadata)
             doc.metadata["parent_id"] = f"{file_hash}__{i}"
         return child_docs, parent_docs
     
@@ -105,81 +111,112 @@ def load_with_unstructured(file_path, use_blip=True):
     使用 Unstructured 解析文件，返回 Document 列表。
     对 Image 元素调用 BLIP 生成描述。
     """
-    try:
-        # 调用 unstructured 自动分区
-        elements = partition(filename=file_path)
-        docs = []
+    # try:
+    # 调用 unstructured 自动分区
+    elements = partition(filename=file_path, languages=["jpn", "chi_sim", "eng"])
+    docs = []
 
-        # 遍历每个元素
-        for idx, element in enumerate(elements):
-            # 基本元数据
-            metadata = {
-                "file_name": os.path.basename(file_path),
-                "file_mtime": os.path.getmtime(file_path),
-                "file_path": file_path,
-                "element_index": idx,
-                "element_type": type(element).__name__,  # 例如 "Title", "Table", "Image"
-            }
+    # 遍历每个元素
+    for idx, element in enumerate(elements):
+        # 基本元数据
+        metadata = {
+            "file_name": os.path.basename(file_path),
+            "file_mtime": os.path.getmtime(file_path),
+            "file_path": file_path,
+            "element_index": idx,
+            "element_type": type(element).__name__,  # 例如 "Title", "Table", "Image"
+        }
 
-            # 合并 Unstructured 自动提取的元数据（如页码）
-            if hasattr(element, 'metadata'):
-                for key, value in element.metadata.to_dict().items():
-                    metadata[f"unstructured_{key}"] = value
+        # 合并 Unstructured 自动提取的元数据（如页码）
+        if hasattr(element, 'metadata'):
+            for key, value in element.metadata.to_dict().items():
+                metadata[f"unstructured_{key}"] = value
 
-            # 获取元素文本内容
-            content = element.text or ""
+        # 获取元素文本内容
+        content = element.text or ""
 
-            # 如果是图片元素且开启了 BLIP
-            if use_blip and isinstance(element, Image):
-                # 尝试从 metadata 中获取图片二进制数据
-                # Unstructured 的 Image 元素通常会将图片保存为临时文件，路径在 metadata['image_path']
-                image_path = element.metadata.get('image_path')
-                if image_path and os.path.exists(image_path):
-                    with open(image_path, 'rb') as f:
-                        image_bytes = f.read()
-                    desc = generate_image_description(image_bytes)
-                    if desc and desc != "[图片无法描述]":
-                        content = desc
-                        metadata["generated_description"] = True
-                else:
-                    # 无法获取图片数据，保留原内容（可能为空）
-                    pass
+        # 如果是图片元素且开启了 BLIP
+        if use_blip and isinstance(element, Image):
+            # 尝试从 metadata 中获取图片二进制数据
+            # Unstructured 的 Image 元素通常会将图片保存为临时文件，路径在 metadata['image_path']
+            # 1. 加载在线模型服务
+            image_caption_func = load_vision_model()
+            image_path = element.metadata.get('image_path')
+            if image_path and os.path.exists(image_path):
+                with open(image_path, 'rb') as f:
+                    image_bytes = f.read()
+                desc = image_caption_func(image_path)
+                if desc and desc != "[图片无法描述]":
+                    content = desc
+                    metadata["generated_description"] = True
+            else:
+                # 无法获取图片数据，保留原内容（可能为空）
+                pass
 
-            # 如果内容为空则跳过（除非是表格但无文本？表格元素一般有文本）
-            if not content.strip():
-                continue
+        # 如果内容为空则跳过（除非是表格但无文本？表格元素一般有文本）
+        if not content.strip():
+            continue
 
-            # 创建 Document 对象
-            doc = Document(page_content=content.strip(), metadata=metadata)
-            docs.append(doc)
+        # 创建 Document 对象
+        doc = Document(page_content=content.strip(), metadata=metadata)
+        # 递归地将复杂类型（如 dict、tuple、list 中的复杂元素）转换为可序列化的形式，并移除无法处理的类型。
+        doc.metadata = filter_complex_metadata(doc.metadata)  
+        docs.append(doc)
 
-        return docs
-    except Exception as e:
-        print(f"Unstructured 解析失败 {file_path}：{str(e)}，回退到手动方法")
-        return None  # 返回 None 表示需要回退
+    return docs
+    # except Exception as e:
+    #     print(f"Unstructured 解析失败 {file_path}：{str(e)}，回退到手动方法")
+    #     return None  # 返回 None 表示需要回退
     
+# @functools.lru_cache(maxsize=1)
+# def load_vision_model():
+#     """从本地加载BLIP图像描述模型"""
+#     if not os.path.exists(LOCAL_BLIP_PATH):
+#         raise FileNotFoundError(f"模型未找到，请先下载到 {LOCAL_BLIP_PATH}")
+#     processor = BlipProcessor.from_pretrained(LOCAL_BLIP_PATH)
+#     model = BlipForConditionalGeneration.from_pretrained(LOCAL_BLIP_PATH)
+#     return processor, model
+
 @functools.lru_cache(maxsize=1)
 def load_vision_model():
-    """从本地加载BLIP图像描述模型"""
-    if not os.path.exists(LOCAL_BLIP_PATH):
-        raise FileNotFoundError(f"模型未找到，请先下载到 {LOCAL_BLIP_PATH}")
-    processor = BlipProcessor.from_pretrained(LOCAL_BLIP_PATH)
-    model = BlipForConditionalGeneration.from_pretrained(LOCAL_BLIP_PATH)
-    return processor, model
+    """
+    阿里百炼 在线多模态模型（无需本地加载）
+    直接返回调用函数，替代BLIP
+    """
+    def image_caption(image_path: str):
+        """图像描述函数"""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"image": image_path},  # 本地图片路径
+                    {"text": "请仅输出图像中的文本内容"}
+                ]
+            }
+        ]
+        # 调用通义千问VL模型
+        response = MultiModalConversation.call(
+            api_key="sk-10579025107e412983a48273c2ff7d3f",
+            model="qwen3.5-flash",  # 免费高速模型
+            messages=messages
+        )
+        return response.output.choices[0].message.content[0]["text"]
+    
+    return image_caption
 
 # 定义生成图像描述的函数（使用BLIP模型）
-def generate_image_description(image_bytes):
-    """根据图片字节数据生成文本描述"""
-    try:
-        processor, model = load_vision_model()
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        inputs = processor(image, return_tensors="pt")
-        out = model.generate(**inputs, max_length=50)
-        description = processor.decode(out[0], skip_special_tokens=True)
-        return description
-    except Exception as e:
-        print(f"图像描述生成失败：{str(e)}")
-        return "[图片无法描述]"
+# def generate_image_description(image_bytes):
+#     """根据图片字节数据生成文本描述"""
+#     try:
+#         processor, model = load_vision_model()
+#         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+#         inputs = processor(image, return_tensors="pt")
+#         out = model.generate(**inputs, max_length=50)
+#         description = processor.decode(out[0], skip_special_tokens=True)
+#         return description
+#     except Exception as e:
+#         print(f"图像描述生成失败：{str(e)}")
+#         return "[图片无法描述]"
     
 # 3. 文本分割配置
 TEXT_SPLITTER = RecursiveCharacterTextSplitter(
@@ -280,7 +317,7 @@ def diff_update_vector_db():
                 db_file_info[file_name] = file_mtime
 
     # 初始化 docstore（父块存储）
-    parent_store_dir = "./parent_store"
+    parent_store_dir = "../parent_store"
     store = LocalFileStore(parent_store_dir)
     
     # 3. 第一步：删除向量库中已不存在的文件
@@ -373,7 +410,7 @@ def init_or_load_vector_db():
     """初始化/加载向量库（首次全量，后续差分）"""
     # try:
     # 确保 docstore 目录存在
-    parent_store_dir = "./parent_store"
+    parent_store_dir = "../parent_store"
     os.makedirs(parent_store_dir, exist_ok=True)
     store = LocalFileStore(parent_store_dir)
     if not os.path.exists(PERSIST_DIR) or len(os.listdir(PERSIST_DIR)) == 0:

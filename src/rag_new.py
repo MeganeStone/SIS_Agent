@@ -87,7 +87,7 @@ from pydantic import Field
 
 def build_qa_chain(vector_db):
     # 1. 加载父文档存储
-    parent_store_dir = "./parent_store"
+    parent_store_dir = "../parent_store"
     docstore = LocalFileStore(parent_store_dir)
     child_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)  # 和vector_db_new.py中一致
     
