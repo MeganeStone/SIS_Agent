@@ -131,8 +131,11 @@ def build_qa_chain(vector_db):
     
     # 6. 构建提示模板和链（与之前类似）
     qa_prompt = ChatPromptTemplate.from_template("""
-    你是本田TBOX/TSU车载终端的技术专家，服务于本田Tier1供应商。
+    畅星集团（SIS）是一家以车联网、物联网及移动出行服务为核心竞争力的专业国际化公司，主要客户是本田，主要产品是TSU（Telematic System Unit）。
+    你是畅星TSU车载终端的技术专家，专门回答用户公司业务相关的问题。
     请严格基于以下参考文档回答问题，只回答文档中存在的信息，不要编造内容。
+    如果文档中有相关信息，请通过参考文档里的'file_name'字段明确告知用户信息来源于哪个文档，通过'page_number'(如有)告知用户信息来源于文档的哪个章节或页码。
+    如果文档中有相关信息但是不完整或不确定，请明确说明文档的内容，并给出合理推测。                                                                                          
     如果文档中没有相关信息，请明确说明「参考文档中未找到相关信息」。
     回答语言要和用户问题一致（用户问中文答中文，问日文答日文，问英文答英文）。
 
@@ -163,8 +166,8 @@ def rag_qa_chain(question: str, qa_chain) -> str:
         else:
             for i, doc in enumerate(context):
                 print(f"文档 {i+1}:")
-                print(f"  内容: {doc.page_content[:200]}...")  # 只打印前200字符
-                print(f"  元数据: {doc.metadata}")
+                print(f"  内容: {doc.page_content[:500]}...")  # 只打印前500字符
+                # print(f"  元数据: {doc.metadata}")
         print("="*50 + "\n")
         # =========================================
         return result["answer"]

@@ -28,9 +28,6 @@ TBOX_DOCS_DIR = "../tbox_docs"  # 可改成你的实际路径，如"D:/seki/AI/T
 # 2. 向量库保存路径
 PERSIST_DIR = "../tbox_vector_db"
 
-# 定义本地模型路径
-LOCAL_BLIP_PATH = "../models/blip-image-captioning-base"  # 与你下载的路径一致
-
 # 定义“单例”向量库实例（初始为None）
 _global_vector_db = None
 
@@ -57,12 +54,12 @@ def create_parent_child_docs(file_path):
     child_docs = []
     child_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
     file_hash = _get_path_hash(file_path)  # 生成文件路径哈希值，用于 parent_id，避免特殊字符问题
+    # 递归地将复杂类型（如 dict、tuple、list 中的复杂元素）转换为可序列化的形式，并移除无法处理的类型。
+    parent_docs = filter_complex_metadata(parent_docs)
 
     for idx, parent_doc in enumerate(parent_docs):
         # 为父块生成唯一 parent_id
         parent_id = f"{file_hash}__{idx}"   # 哈希值+索引，仅含字母/数字/__（__是合法的，因为哈希无非法字符）
-        # 递归地将复杂类型（如 dict、tuple、list 中的复杂元素）转换为可序列化的形式，并移除无法处理的类型。
-        parent_doc.metadata = filter_complex_metadata(parent_doc.metadata)
         parent_doc.metadata["parent_id"] = parent_id
 
         # 切分子块
@@ -91,13 +88,13 @@ def load_file_to_parent_child(file_path):
     else:
         # TXT：使用原有加载方式，每个块同时作为父块和子块
         docs = load_single_doc(file_path)  # 返回 Document 列表
+        # 递归地将复杂类型（如 dict、tuple、list 中的复杂元素）转换为可序列化的形式，并移除无法处理的类型。
+        docs = filter_complex_metadata(docs)
         child_docs = docs
         parent_docs = docs
         file_hash = _get_path_hash(file_path)
         # 为每个文档生成 parent_id（如果需要）
         for i, doc in enumerate(parent_docs):
-            # 递归地将复杂类型（如 dict、tuple、list 中的复杂元素）转换为可序列化的形式，并移除无法处理的类型。
-            doc.metadata = filter_complex_metadata(doc.metadata)
             doc.metadata["parent_id"] = f"{file_hash}__{i}"
         return child_docs, parent_docs
     
@@ -153,9 +150,9 @@ def load_with_unstructured(file_path, use_blip=True):
 
         # 创建 Document 对象
         doc = Document(page_content=content.strip(), metadata=metadata)
-        # 递归地将复杂类型（如 dict、tuple、list 中的复杂元素）转换为可序列化的形式，并移除无法处理的类型。
-        doc.metadata = filter_complex_metadata(doc.metadata)  
         docs.append(doc)
+        # 递归地将复杂类型（如 dict、tuple、list 中的复杂元素）转换为可序列化的形式，并移除无法处理的类型。
+        docs = filter_complex_metadata(docs)  
 
     return docs
     # except Exception as e:
