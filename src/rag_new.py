@@ -18,6 +18,7 @@ import pickle
 
 from rerank import DashScopeRerank
 from vector_db_new import get_all_parent_docs
+from synonyms import expand_query_synonyms
 
 # ====================== 全局配置（新手只需改这里） ======================
 # 4. 大模型配置（请替换为自己的API Key）
@@ -128,7 +129,6 @@ def build_qa_chain(vector_db):
         base_retriever=base_retriever
     )
     
-    
     # 6. 构建提示模板和链（与之前类似）
     qa_prompt = ChatPromptTemplate.from_template("""
     畅星集团（SIS）是一家以车联网、物联网及移动出行服务为核心竞争力的专业国际化公司，主要客户是本田，主要产品是TSU（Telematic System Unit）。
@@ -154,6 +154,8 @@ def build_qa_chain(vector_db):
 def rag_qa_chain(question: str, qa_chain) -> str:
     """RAG问答函数（依赖注入：qa_chain由外部传入）"""
     try:
+        # 👇 加这一行：扩展同义词后检索
+        question = expand_query_synonyms(question)
         result = qa_chain.invoke({"input": question})
 
         # ========== 调试输出：打印召回内容 ==========

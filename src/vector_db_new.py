@@ -22,6 +22,8 @@ import os
 import time
 import gc
 from datetime import datetime
+
+from synonyms import enhance_doc_synonyms  # 导入同义词增强函数
 # ====================== 全局配置（新手只需改这里） ======================
 # 1. 本地文档文件夹（存放所有TBOX文档，支持PDF/TXT）
 TBOX_DOCS_DIR = "../tbox_docs"  # 可改成你的实际路径，如"D:/seki/AI/TBOX文档"
@@ -127,6 +129,8 @@ def load_with_unstructured(file_path, use_blip=True):
 
         # 获取元素文本内容
         content = element.text or ""
+        # 👇 加这一行：自动给文档全称加缩写
+        content = enhance_doc_synonyms(content)
 
         # 如果是图片元素且开启了 BLIP
         if use_blip and isinstance(element, Image):
@@ -316,6 +320,8 @@ def load_single_doc(file_path):
         # 文本文件继续用原有方法（Unstructured 对纯文本处理类似）
         loader = TextLoader(file_path, encoding="utf-8")
         docs = loader.load()
+        # 👇 加这一行：自动给文档全称加缩写
+        docs = enhance_doc_synonyms(docs)
         split_docs = TEXT_SPLITTER.split_documents(docs)
         mtime = os.path.getmtime(file_path)
         for doc in split_docs:
