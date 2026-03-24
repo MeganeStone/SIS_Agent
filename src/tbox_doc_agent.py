@@ -25,7 +25,7 @@ from langchain_core.messages import AIMessageChunk, ToolMessageChunk
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain.agents.middleware import SummarizationMiddleware
 
-from tools import translate_excel_tool, translate_ppt_tool, create_rag_qa_tool  # 导入翻译工具和RAG工具
+from tools import translate_excel_tool, translate_ppt_tool, create_rag_qa_tool, web_search  # 导入翻译工具和RAG工具
 from rag_new import build_qa_chain  # 导入RAG问答链函数
 from vector_db_new import TBOX_DOCS_DIR, diff_update_vector_db, get_local_docs_info, get_vector_db  # 导入文档目录配置
 
@@ -72,6 +72,9 @@ def create_tbox_agent():
        - 参数格式（必须是合法JSON）：{"file_name":"文件名.pptx","target_lang":"目标语言"}
     3. excel翻译：仅用于翻译Excel文件
        - 参数格式（必须是合法JSON）：{"file_name":"文件名.xlsx","target_lang":"目标语言"}
+    4. web_search：仅用于搜索网络信息
+       - 参数格式（必须是合法JSON）：{"query":"搜索查询词"}
+
 
     ### 工具使用强制规则
     1. 只有公司业务问题或者用户明确说明要使用rag，或者用户说要从本地知识库查询时才调用，其他问题绝不调用；
@@ -81,10 +84,10 @@ def create_tbox_agent():
     5. 工具调用参数必须是合法JSON格式，禁止语法错误；
     6. 工具调用失败时，返回友好提示，不泄露任何技术细节；
     7. 最终回答要简洁、准确，只返回用户需要的结果，不添加额外分析/解释；
+    8. 当用户问题需要上网搜索时，必须调用web_search工具，并结合搜索结果给出回答；
 
     ### 其他规则
     1. 回答语言要和用户问题一致（用户问中文答中文，问日文答日文，问英文答英文）；
-    2. 遇到需要上网查询的问题时可以上网查询
     """
     # 步骤1：初始化向量库（主线程执行，有SessionContext）
     vector_db = init_vector_db_in_main()
@@ -93,7 +96,7 @@ def create_tbox_agent():
     # 步骤3：创建工具（依赖注入：传入qa_chain）
     rag_qa_tool = create_rag_qa_tool(qa_chain)  # RAG工具
     # 步骤4：构建工具列表
-    tools = [translate_excel_tool, translate_ppt_tool, rag_qa_tool]  # 工具列表
+    tools = [translate_excel_tool, translate_ppt_tool, rag_qa_tool, web_search]  # 工具列表
     # 创建Agent
     agent = create_agent(
         model=LLM, 
