@@ -4,7 +4,9 @@ TBOX智能助手Agent
 集成RAG问答、文件翻译、普通对话能力，单对话框自然语言交互
 依赖tbox_custom_translator.py实现文件翻译
 """
-
+# 加载.env文件（必须放在代码最开头！）
+from dotenv import load_dotenv
+load_dotenv()  # 自动读取 .env 文件里的所有环境变量
 import time
 import warnings
 
@@ -24,7 +26,9 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessageChunk, ToolMessageChunk
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain.agents.middleware import SummarizationMiddleware
+from langsmith import traceable
 
+# 注意：如果你的tools/rag_new/vector_db_new文件路径不对，需自行调整
 from tools import translate_excel_tool, translate_ppt_tool, create_rag_qa_tool, web_search  # 导入翻译工具和RAG工具
 from rag_new import build_qa_chain  # 导入RAG问答链函数
 from vector_db_new import TBOX_DOCS_DIR, diff_update_vector_db, get_local_docs_info, get_vector_db  # 导入文档目录配置
@@ -196,46 +200,30 @@ def main():
             # 初始状态，覆盖模型首字延迟
             message_placeholder.markdown("🤔 思考中...")
 
-            # 状态变量
-            thinking_text = ""          # 思考阶段累积的文本（灰色斜体）
-            tool_calls = []             # 工具调用提示列表（如 "🔧 正在调用 rag_qa_chain..."）
-            final_text = ""             # 最终回答累积的文本（正常样式）
-            tool_encountered = False    # 是否已遇到工具调用（True 后开始累积 final_text）
-            temp_status = None          # 临时状态，用于在永久内容出现前显示动态提示
+            # ========== 核心修改1：重构状态变量 ==========
+            current_status = "🤔 思考中..."  # 当前动态状态提示
+            final_answer = ""               # 最终要显示的回答内容
+            is_tool_running = False         # 是否正在执行工具调用
+            current_tool_name = ""          # 当前执行的工具名
 
             def update_display(cursor=True):
-                """根据永久内容和临时状态构建并更新显示"""
-                # 构建永久内容部分（思考文本 + 工具提示 + 最终回答）
-                permanent_parts = []
-                if tool_encountered:
-                    # 有工具调用：思考部分（灰色）和最终回答（正常）分开
-                    if thinking_text or tool_calls:
-                        think_lines = []
-                        if thinking_text:
-                            think_lines.append(thinking_text.replace('\n', '<br>'))
-                        for tip in tool_calls:
-                            think_lines.append(tip)
-                        think_html = '<br>'.join(think_lines)
-                        permanent_parts.append(f'<div style="color: gray; font-style: italic;">{think_html}</div>')
-                    if final_text:
-                        final_html = final_text.replace('\n', '<br>')
-                        permanent_parts.append(f'<div>{final_html}</div>')
+                """更新显示：优先显示动态状态，最终只显示回答"""
+                display_content = ""
+                # 1. 如果工具正在运行，显示工具状态
+                if is_tool_running and current_tool_name:
+                    display_content = f"🔧 正在调用 {current_tool_name}..."
+                # 2. 否则显示思考状态（如果还没生成回答）
+                elif not final_answer:
+                    display_content = current_status
+                # 3. 有回答内容时，显示回答
                 else:
-                    # 无工具调用：所有思考内容都是最终回答（正常样式）
-                    if thinking_text:
-                        final_html = thinking_text.replace('\n', '<br>')
-                        permanent_parts.append(f'<div>{final_html}</div>')
-
-                # 决定最终显示内容
-                if permanent_parts:
-                    display_html = ''.join(permanent_parts)
-                else:
-                    # 无永久内容时，显示临时状态或默认提示
-                    display_html = temp_status if temp_status else "🤔 思考中..."
-
-                if cursor:
-                    display_html += '▌'
-                message_placeholder.markdown(display_html, unsafe_allow_html=True)
+                    display_content = final_answer.replace('\n', '<br>')
+                
+                # 添加光标（仅在未完成时）
+                if cursor and (is_tool_running or not final_answer):
+                    display_content += '▌'
+                
+                message_placeholder.markdown(display_content, unsafe_allow_html=True)
 
             try:
                 # 关键：转换为Agent要求的入参格式
@@ -248,59 +236,64 @@ def main():
                     config = {"configurable": {"thread_id": "1"}}
                 ):
                     if mode == "updates":
-                        # 处理节点状态更新，更新临时状态
+                        # ========== 核心修改2：修正节点状态判断 ==========
                         for node_name, node_output in data.items():
-                            if node_name in ["agent", "model"]:
-                                temp_status = "🤔 正在思考..."
-                            elif node_name == "tools":
-                                # 尝试从输出中提取工具名
-                                tool_name = "未知工具"
-                                if isinstance(node_output, dict) and "messages" in node_output:
+                            # 情况1：model节点 + 工具调用标记 = 正在调用工具
+                            if node_name == "model":
+                                try:
+                                    # 获取模型返回的元数据：finish_reason
                                     last_msg = node_output["messages"][-1]
-                                    if hasattr(last_msg, "name"):
-                                        tool_name = last_msg.name
-                                temp_status = f"🔧 正在调用 {tool_name}..."
+                                    finish_reason = last_msg.response_metadata.get("finish_reason", "")
+                                    tool_calls = last_msg.tool_calls
+
+                                    # 关键判断：模型决定调用工具
+                                    if finish_reason == "tool_calls" and tool_calls:
+                                        is_tool_running = True
+                                        # 提取工具名
+                                        current_tool_name = tool_calls[0]["name"]
+                                    else:
+                                        is_tool_running = False
+                                except:
+                                    print("1.无法解析模型输出的工具调用信息，默认不显示工具状态")
+                                    is_tool_running = False
+                            
+                            # 情况2：tools节点 = 工具执行中
+                            elif node_name == "tools":
+                                is_tool_running = True
+                                try:
+                                    last_msg = node_output["messages"][-1]
+                                    current_tool_name = last_msg.name
+                                except:
+                                    print("2.无法解析工具节点的工具名，默认显示通用工具状态")
+                                    current_tool_name = "工具"
+                            elif node_name in ["agent"]:
+                                # 模型/思考节点：标记工具已结束，显示思考状态
+                                is_tool_running = False
+                                current_status = "🤔 正在思考..."
                             else:
-                                temp_status = f"⏳ 执行步骤: {node_name}"
-                        # 立即刷新显示（可能只显示临时状态）
+                                # 其他节点：通用处理
+                                is_tool_running = False
+                                current_status = f"⏳ 执行步骤: {node_name}"
+                        # 更新显示（工具/思考状态）
                         update_display(cursor=True)
 
                     elif mode == "messages":
                         message_chunk, metadata = data
 
-                        # 一旦收到实际消息块，清除临时状态（永久内容即将出现）
-                        temp_status = None
-
-                        # 处理工具调用消息
-                        if isinstance(message_chunk, ToolMessageChunk):
-                            tool_encountered = True
-                            tool_name = getattr(message_chunk, "name", None) or metadata.get("tool_name", "未知工具")
-                            tool_calls.append(f"🔧 正在调用 {tool_name}...")
-                            update_display(cursor=True)
-                            continue
-
-                        # 处理 AI 消息块（仅来自最终模型节点的文本）
+                        # 处理AI回答消息（累积最终回答）
                         if isinstance(message_chunk, AIMessageChunk) and metadata.get("langgraph_node") == "model":
                             token = message_chunk.content
-                            if not token:
-                                continue
-
-                            if not tool_encountered:
-                                thinking_text += token
-                            else:
-                                final_text += token
-
+                            if token:
+                                final_answer += token
+                            # 工具已结束，显示回答内容
+                            is_tool_running = False
                             update_display(cursor=True)
 
-                # 流式结束，移除光标
-                update_display(cursor=False)
+                # ========== 核心修改4：最终显示（仅保留回答，移除所有状态提示） ==========
+                message_placeholder.markdown(final_answer, unsafe_allow_html=True)
 
-                # 存储最终回答到历史（不含思考过程和工具提示）
-                if tool_encountered:
-                    answer_to_store = final_text
-                else:
-                    answer_to_store = thinking_text
-                st.session_state.messages.append({"role": "assistant", "content": answer_to_store})
+                # 存储最终回答到历史
+                st.session_state.messages.append({"role": "assistant", "content": final_answer})
 
             except Exception as e:
                 message_placeholder.empty()

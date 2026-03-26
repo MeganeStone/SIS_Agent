@@ -55,7 +55,7 @@ def web_search(query: str) -> str:
     payload = {
         "Query": query[:100],  # 限制长度
         "SearchType": "web_summary",  # 获取带总结的结果
-        "Count": 5,  # 返回结果条数，最多50
+        "Count": 10,  # 返回结果条数，最多50
         "NeedSummary": True,  # 必须为 True，配合 web_summary
         # 可选：限制发布时间范围
         # "TimeRange": "OneWeek",  # OneDay/OneWeek/OneMonth/OneYear
