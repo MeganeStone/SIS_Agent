@@ -8,11 +8,17 @@ import gc
 import subprocess
 import sys
 from openai import OpenAI
-from openai import APIError, RateLimitError, Timeout, APIConnectionError
+from openai import APIError, RateLimitError, APITimeoutError, APIConnectionError
 # 新增：导入httpx处理客户端配置
 import httpx
 # ---------------------- LangChain 依赖 ----------------------
 from langchain_core.tools import StructuredTool, ToolException
+import tempfile
+import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from lxml import etree
+import copy
 
 # ---------------------- 全局配置（你的默认目录） ----------------------
 DEFAULT_INPUT_DIR = r"D:\seki\AI\copilotTest\input"
@@ -25,6 +31,116 @@ MAX_CONTEXT_LENGTH = 2000  # 上下文最大长度（防止Token超限）
 _client = None
 _translation_cache = {}
 
+def translate_ppt_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, output_dir: str = DEFAULT_OUTPUT_DIR, 
+                       target_lang: str = DEFAULT_TARGET_LANG, delay: float = DEFAULT_DELAY) -> str:
+    """
+    翻译PPT文件（并行版）：按幻灯片分组并行翻译，每组内顺序翻译，保持上下文连贯。
+    """
+    global _translation_cache
+    _translation_cache = {}  # 清空缓存
+    
+    input_path = os.path.abspath(os.path.join(source_dir, file_name))
+    output_path = os.path.abspath(os.path.join(output_dir, f"{os.path.splitext(file_name)[0]}_{target_lang}{os.path.splitext(file_name)[1]}"))
+    
+    # 检查文件
+    if not os.path.exists(input_path):
+        raise ToolException(f"文件不存在: {input_path}")
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    from pptx import Presentation
+    prs = Presentation(input_path)
+    total_slides = len(prs.slides)
+    
+    # 获取系统可用日语字体（用于后续设置）
+    jp_fonts = ["Meiryo UI", "MS Gothic", "MS Mincho", "SimSun", "Arial Unicode MS"]
+    jp_font = jp_fonts[0]
+    for font in jp_fonts:
+        try:
+            from pptx.util import Font
+            Font(name=font)
+            jp_font = font
+            break
+        except:
+            continue
+    
+    # 收集每个幻灯片的数据：幻灯片对象、需要翻译的形状列表、上下文
+    slides_data = []
+    for i, slide in enumerate(prs.slides):
+        ctx = {
+            "file_name": file_name,
+            "slide_num": i + 1,
+            "total_slides": total_slides,
+            "translated_segments": [],
+            "term_requirements": "TBOX译为TBOX、TSU译为TSU、CAN总线译为CANバス（日语）/CAN Bus（英语），公司名称不翻译"
+        }
+        shapes_to_translate = []
+        # 遍历形状
+        for shape in slide.shapes:
+            # 文本框
+            if hasattr(shape, "text") and shape.text.strip():
+                shapes_to_translate.append(shape)
+            # 表格
+            if shape.has_table:
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            shapes_to_translate.append(cell)
+        slides_data.append((slide, shapes_to_translate, ctx))
+    
+    # 定义处理单个幻灯片的函数
+    def process_slide(slide, shapes, ctx, target_lang, delay, jp_font):
+        # 顺序翻译该幻灯片中的所有形状
+        for shape in shapes:
+            original_text = shape.text
+            translated = translate_text(original_text, target_lang, delay, context=ctx)
+            shape.text = translated
+            # 设置字体（保证显示）
+            if hasattr(shape, "text_frame"):
+                tf = shape.text_frame
+                tf.word_wrap = True
+                from pptx.enum.text import MSO_AUTO_SIZE
+                tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+                for para in tf.paragraphs:
+                    for run in para.runs:
+                        run.font.name = jp_font
+                        if run.font.size is None:
+                            from pptx.util import Pt
+                            run.font.size = Pt(10)
+            # 表格单元格也可能有 text_frame
+            elif hasattr(shape, "text_frame"):
+                tf = shape.text_frame
+                tf.word_wrap = True
+                from pptx.enum.text import MSO_AUTO_SIZE
+                tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+                for para in tf.paragraphs:
+                    for run in para.runs:
+                        run.font.name = jp_font
+                        if run.font.size is None:
+                            from pptx.util import Pt
+                            run.font.size = Pt(10)
+        return True
+    
+    # 并行处理每个幻灯片
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = []
+        for slide, shapes, ctx in slides_data:
+            future = executor.submit(process_slide, slide, shapes, ctx, target_lang, delay, jp_font)
+            futures.append(future)
+        # 等待所有任务完成，若有异常会抛出
+        for future in as_completed(futures):
+            future.result()
+    
+    # 保存最终文件
+    prs.save(output_path)
+    
+    # 清理
+    _translation_cache.clear()
+    gc.collect()
+    
+    return f"PPT翻译完成！输出路径: {output_path}"
+
 def _get_client(force_recreate=False):
     """获取OpenAI客户端（适配DashScope兼容模式）"""
     global _client
@@ -32,7 +148,7 @@ def _get_client(force_recreate=False):
         api_key = os.environ.get("OPENAI_API_KEY", "sk-10579025107e412983a48273c2ff7d3f")  # 替换成你的API Key
         base_url = os.environ.get("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
         http_client = httpx.Client(
-            timeout=httpx.Timeout(30.0, connect=30.0),  # 显式设置超时
+            timeout=httpx.Timeout(10.0, connect=20.0),  # 显式设置超时
             follow_redirects=True,
         )
         _client = OpenAI(api_key=api_key, base_url=base_url, http_client=http_client)
@@ -105,7 +221,7 @@ def translate_text(text: str, target_lang: str = DEFAULT_TARGET_LANG, delay: flo
     
     translation = None
     # 重试策略
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             client = _get_client(force_recreate=(attempt > 0))
             # 修正：使用正确的OpenAI调用方法（chat.completions.create）
@@ -128,7 +244,7 @@ def translate_text(text: str, target_lang: str = DEFAULT_TARGET_LANG, delay: flo
             else:
                 print(f"[翻译无效] 尝试{attempt+1}次，结果无{target_lang}内容，重试...")
                 translation = None
-        except (APIError, RateLimitError, Timeout, APIConnectionError) as e:
+        except (APIError, RateLimitError, APITimeoutError, APIConnectionError) as e:
             print(f"[重试] 尝试{attempt+1}次失败（API错误）: {e}")
             time.sleep(delay * (attempt + 1))
         except Exception as e:
@@ -158,102 +274,6 @@ def kill_excel_processes():
         print("已清理所有残留Excel进程")
     except Exception as e:
         print(f"清理Excel进程失败: {e}")
-
-def translate_ppt_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, output_dir: str = DEFAULT_OUTPUT_DIR, 
-                       target_lang: str = DEFAULT_TARGET_LANG, delay: float = DEFAULT_DELAY) -> str:
-    """
-    翻译PPT文件
-    :param file_name: 要翻译的PPT文件名（如"test.pptx"）
-    :param source_dir: 源文件目录（默认D:\seki\AI\copilotTest\input）
-    :param output_dir: 输出目录（默认D:\seki\AI\copilotTest\output）
-    :param target_lang: 目标语言（默认日语）
-    :param delay: 翻译延迟（默认2.0秒）
-    :return: 翻译结果提示
-    """
-    global _translation_cache
-    _translation_cache = {}  # 清空缓存
-    input_path = os.path.abspath(os.path.join(source_dir, file_name))
-    output_path = os.path.abspath(os.path.join(output_dir, f"{os.path.splitext(file_name)[0]}_{target_lang}{os.path.splitext(file_name)[1]}"))
-
-    # 检查文件
-    if not os.path.exists(input_path):
-        raise ToolException(f"文件不存在: {input_path}")
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    try:
-        prs = Presentation(input_path)
-        total_slides = len(prs.slides)
-        # 获取系统可用的日语字体（兼容不同系统）
-        jp_fonts = ["Meiryo UI", "MS Gothic", "MS Mincho", "SimSun", "Arial Unicode MS"]
-        jp_font = jp_fonts[0]
-        for font in jp_fonts:
-            try:
-                from pptx.util import Font
-                Font(name=font)
-                jp_font = font
-                break
-            except:
-                continue
-        
-        # ====================== 核心修改：初始化PPT级上下文 ======================
-        ppt_context = {
-            "file_name": file_name,
-            "slide_num": 0,
-            "total_slides": total_slides,
-            "translated_segments": [],  # 存储当前页已翻译的段落
-            "term_requirements": "TBOX译为TBOX、TSU译为TSU、CAN总线译为CANバス（日语）/CAN Bus（英语），公司名称不翻译"
-        }
-        for i, slide in enumerate(prs.slides, 1):
-            print(f"\n=== PPT 第 {i}/{total_slides} 页 ===output_path: {output_path}")
-            # 更新上下文：当前页码 + 清空当前页的已翻译段落（避免跨页上下文混淆）
-            ppt_context["slide_num"] = i
-            ppt_context["translated_segments"] = []  # 每页上下文独立，保证页内连贯即可 todo：后续可改为跨页累计，但需要更复杂的上下文管理和更多的token消耗
-            for shape in slide.shapes:
-                # 文本框
-                if hasattr(shape, "text"):
-                    t = shape.text
-                    # if re.search(r"[\u4e00-\u9fff]", t):
-                    shape.text = translate_text(t, target_lang, delay, context=ppt_context)
-                    # 字体设置
-                    if hasattr(shape, "text_frame"):
-                        tf = shape.text_frame
-                        tf.word_wrap = True
-                        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
-                        for para in tf.paragraphs:
-                            for run in para.runs:
-                                run.font.name = jp_font
-                                if run.font.size is None:
-                                    run.font.size = Pt(10)
-                # 表格
-                if shape.has_table:
-                    for row in shape.table.rows:
-                        for cell in row.cells:
-                            t = cell.text
-                            # if re.search(r"[\u4e00-\u9fff]", t):
-                            cell.text = translate_text(t, target_lang, delay, context=ppt_context)
-                            # 表格字体
-                            if hasattr(cell, "text_frame"):
-                                tf = cell.text_frame
-                                tf.word_wrap = True
-                                tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
-                                for para in tf.paragraphs:
-                                    for run in para.runs:
-                                        run.font.name = jp_font
-                                        if run.font.size is None:
-                                            run.font.size = Pt(10)
-            # 每页保存一次，避免内存溢出
-            prs.save(output_path)
-            gc.collect()
-        prs.save(output_path)
-        # 清理缓存和内存
-        _translation_cache.clear()
-        gc.collect()
-        return f"PPT翻译完成！输出路径: {output_path}"
-    except Exception as e:
-        _translation_cache.clear()
-        gc.collect()
-        raise ToolException(f"PPT翻译失败: {str(e)}")
 
 def translate_excel_all_text(wb, sheet_count, target_lang, delay, excel_context):
     """
@@ -456,7 +476,7 @@ if __name__ == "__main__":
     from pathlib import Path
 
     # ============== 测试配置 ==============
-    TEST_FILE = "TT02 复现测试结果汇总.xlsx"  # 测试文件名
+    TEST_FILE = "test.pptx"  # 测试文件名
     TEST_INPUT_DIR = Path(DEFAULT_INPUT_DIR)
     TEST_OUTPUT_DIR = Path(DEFAULT_OUTPUT_DIR)
     
@@ -485,11 +505,11 @@ if __name__ == "__main__":
         
         # 执行翻译
         start_time = time.time()
-        result = translate_excel_file(
+        result = translate_ppt_file(
             file_name=TEST_FILE,
             source_dir=DEFAULT_INPUT_DIR,
             output_dir=DEFAULT_OUTPUT_DIR,
-            target_lang=DEFAULT_TARGET_LANG,
+            target_lang="英语",
             delay=DEFAULT_DELAY
         )
         elapsed = time.time() - start_time
