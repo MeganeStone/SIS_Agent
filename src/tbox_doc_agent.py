@@ -39,7 +39,7 @@ st.set_page_config(
     layout="wide"
 )
 # ====================== 第一步：基础配置（大模型/嵌入/文本分割） ======================
-# 1. 通义千问大模型配置
+# 1. 通义千问大模型配置 
 if not DASHSCOPE_API_KEY or DASHSCOPE_API_KEY == "sk-10579025107e412983a48273c2ff7d3f":
     st.warning("⚠️ 请替换为自己的DashScope API Key！")
 LLM = ChatOpenAI(

@@ -3,7 +3,7 @@ COMPANY_SYNONYMS = {
     "DUF": "DAQ Upload File",
     "DAQ Upload File": "DUF",
     "DSF": "DAQ Setting File",
-    "DAQ Setting File": "DSUF",
+    "DAQ Setting File": "DSF",
     # 你可以无限加公司缩写
     # "SOP": "标准作业程序",
     # "KPI": "关键绩效指标",

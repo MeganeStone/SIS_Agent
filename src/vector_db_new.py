@@ -1,5 +1,4 @@
 # 在 vector_db.py 文件顶部添加导入
-from pptx import Presentation
 from langchain_core.documents import Document
 
 from PIL import Image
@@ -29,7 +28,8 @@ from synonyms import enhance_doc_synonyms  # 导入同义词增强函数
 TBOX_DOCS_DIR = "../tbox_docs"  # 可改成你的实际路径，如"D:/seki/AI/TBOX文档"
 # 2. 向量库保存路径
 PERSIST_DIR = "../tbox_vector_db"
-
+# 3. embedding模型API Key（请替换成自己的）
+DASHSCOPE_API_KEY = "sk-10579025107e412983a48273c2ff7d3f"
 # 定义“单例”向量库实例（初始为None）
 _global_vector_db = None
 
@@ -41,7 +41,7 @@ def _get_path_hash(file_path: str) -> str:
 def load_embedding_model():
     return DashScopeEmbeddings(
         model="text-embedding-v4",
-        dashscope_api_key="sk-10579025107e412983a48273c2ff7d3f"
+        dashscope_api_key=DASHSCOPE_API_KEY
     )
 
 def create_parent_child_docs(file_path):
@@ -106,62 +106,62 @@ def load_with_unstructured(file_path, use_blip=True):
     使用 Unstructured 解析文件，返回 Document 列表。
     对 Image 元素调用 BLIP 生成描述。
     """
-    # try:
-    # 调用 unstructured 自动分区
-    elements = partition(filename=file_path, languages=["jpn", "chi_sim", "eng"])
-    docs = []
+    try:
+        # 调用 unstructured 自动分区
+        elements = partition(filename=file_path, languages=["jpn", "chi_sim", "eng"])
+        docs = []
 
-    # 遍历每个元素
-    for idx, element in enumerate(elements):
-        # 基本元数据
-        metadata = {
-            "file_name": os.path.basename(file_path),
-            "file_mtime": os.path.getmtime(file_path),
-            "file_path": file_path,
-            "element_index": idx,
-            "element_type": type(element).__name__,  # 例如 "Title", "Table", "Image"
-        }
+        # 遍历每个元素
+        for idx, element in enumerate(elements):
+            # 基本元数据
+            metadata = {
+                "file_name": os.path.basename(file_path),
+                "file_mtime": os.path.getmtime(file_path),
+                "file_path": file_path,
+                "element_index": idx,
+                "element_type": type(element).__name__,  # 例如 "Title", "Table", "Image"
+            }
 
-        # 合并 Unstructured 自动提取的元数据（如页码）
-        if hasattr(element, 'metadata'):
-            for key, value in element.metadata.to_dict().items():
-                metadata[f"unstructured_{key}"] = value
+            # 合并 Unstructured 自动提取的元数据（如页码）
+            if hasattr(element, 'metadata'):
+                for key, value in element.metadata.to_dict().items():
+                    metadata[f"unstructured_{key}"] = value
 
-        # 获取元素文本内容
-        content = element.text or ""
-        # 👇 加这一行：自动给文档全称加缩写
-        content = enhance_doc_synonyms(content)
+            # 获取元素文本内容
+            content = element.text or ""
+            # 👇 加这一行：自动给文档全称加缩写
+            content = enhance_doc_synonyms(content)
 
-        # 如果是图片元素且开启了 BLIP
-        if use_blip and isinstance(element, Image):
-            # 尝试从 metadata 中获取图片二进制数据
-            # Unstructured 的 Image 元素通常会将图片保存为临时文件，路径在 metadata['image_path']
-            # 1. 加载在线模型服务
-            image_caption_func = load_vision_model()
-            image_path = element.metadata.get('image_path')
-            if image_path and os.path.exists(image_path):
-                desc = image_caption_func(image_path)
-                if desc and desc != "[图片无法描述]":
-                    content = desc
-                    metadata["generated_description"] = True
-            else:
-                # 无法获取图片数据，保留原内容（可能为空）
-                pass
+            # 如果是图片元素且开启了 BLIP
+            if use_blip and isinstance(element, Image):
+                # 尝试从 metadata 中获取图片二进制数据
+                # Unstructured 的 Image 元素通常会将图片保存为临时文件，路径在 metadata['image_path']
+                # 1. 加载在线模型服务
+                image_caption_func = load_vision_model()
+                image_path = element.metadata.get('image_path')
+                if image_path and os.path.exists(image_path):
+                    desc = image_caption_func(image_path)
+                    if desc and desc != "[图片无法描述]":
+                        content = desc
+                        metadata["generated_description"] = True
+                else:
+                    # 无法获取图片数据，保留原内容（可能为空）
+                    pass
 
-        # 如果内容为空则跳过（除非是表格但无文本？表格元素一般有文本）
-        if not content.strip():
-            continue
+            # 如果内容为空则跳过（除非是表格但无文本？表格元素一般有文本）
+            if not content.strip():
+                continue
 
-        # 创建 Document 对象
-        doc = Document(page_content=content.strip(), metadata=metadata)
-        docs.append(doc)
-        # 递归地将复杂类型（如 dict、tuple、list 中的复杂元素）转换为可序列化的形式，并移除无法处理的类型。
-        docs = filter_complex_metadata(docs)  
+            # 创建 Document 对象
+            doc = Document(page_content=content.strip(), metadata=metadata)
+            docs.append(doc)
+            # 递归地将复杂类型（如 dict、tuple、list 中的复杂元素）转换为可序列化的形式，并移除无法处理的类型。
+            docs = filter_complex_metadata(docs)  
 
-    return docs
-    # except Exception as e:
-    #     print(f"Unstructured 解析失败 {file_path}：{str(e)}，回退到手动方法")
-    #     return None  # 返回 None 表示需要回退
+        return docs
+    except Exception as e:
+        print(f"Unstructured 解析失败 {file_path}：{str(e)}，回退到手动方法")
+        return None  # 返回 None 表示需要回退
     
 def aggregate_docs_by_page(docs: list[Document]) -> list[Document]:
     """
@@ -273,7 +273,7 @@ def load_vision_model():
         ]
         # 调用通义千问VL模型
         response = MultiModalConversation.call(
-            api_key="sk-10579025107e412983a48273c2ff7d3f",
+            api_key=DASHSCOPE_API_KEY,
             model="qwen3.5-flash",  # 免费高速模型
             messages=messages
         )
@@ -453,54 +453,54 @@ def diff_update_vector_db():
 # 初始化向量库的函数（首次全量，后续直接加载）
 def init_or_load_vector_db():
     """初始化/加载向量库（首次全量，后续差分）"""
-    # try:
-    # 确保 docstore 目录存在
-    parent_store_dir = "../parent_store"
-    os.makedirs(parent_store_dir, exist_ok=True)
-    store = LocalFileStore(parent_store_dir)
-    if not os.path.exists(PERSIST_DIR) or len(os.listdir(PERSIST_DIR)) == 0:
-        print("📦 首次使用，全量构建向量库...")
-        local_docs = get_local_docs_info()
-        all_child_docs = []
-        # 用于存储父块，稍后统一存入 docstore
-        all_parent_docs = []
-        for file_name, file_info in local_docs.items():
-            print(f"📄 加载文件：{file_name}")
-            # 生成父子文档
-            child_docs, parent_docs = load_file_to_parent_child(file_info["path"])
-            all_child_docs.extend(child_docs)
-            all_parent_docs.extend(parent_docs)
+    try:
+        # 确保 docstore 目录存在
+        parent_store_dir = "../parent_store"
+        os.makedirs(parent_store_dir, exist_ok=True)
+        store = LocalFileStore(parent_store_dir)
+        if not os.path.exists(PERSIST_DIR) or len(os.listdir(PERSIST_DIR)) == 0:
+            print("📦 首次使用，全量构建向量库...")
+            local_docs = get_local_docs_info()
+            all_child_docs = []
+            # 用于存储父块，稍后统一存入 docstore
+            all_parent_docs = []
+            for file_name, file_info in local_docs.items():
+                print(f"📄 加载文件：{file_name}")
+                # 生成父子文档
+                child_docs, parent_docs = load_file_to_parent_child(file_info["path"])
+                all_child_docs.extend(child_docs)
+                all_parent_docs.extend(parent_docs)
 
-        if all_child_docs:
-            vector_db = Chroma(
-                collection_name="all_child_docs",
-                embedding_function=EMBEDDINGS,
-                persist_directory=PERSIST_DIR
-            )
-            # ========== 补充关键步骤：将子块添加到向量库 ==========
-            vector_db.add_documents(all_child_docs)
-            # vector_db.persist()
-            # 父块存入 docstore
-            # 使用字典批量存储以提高效率
-            parent_dict = {}
-            for parent in all_parent_docs:
-                parent_id = parent.metadata.get("parent_id")
-                if parent_id:
-                    parent_dict[parent_id] = pickle.dumps(parent)
-            if parent_dict:
-                store.mset(list(parent_dict.items()))
-            print(f"✅ 首次全量构建完成：子块{len(all_child_docs)}个，父块{len(all_parent_docs)}个")
+            if all_child_docs:
+                vector_db = Chroma(
+                    collection_name="all_child_docs",
+                    embedding_function=EMBEDDINGS,
+                    persist_directory=PERSIST_DIR
+                )
+                # ========== 补充关键步骤：将子块添加到向量库 ==========
+                vector_db.add_documents(all_child_docs)
+                # vector_db.persist()
+                # 父块存入 docstore
+                # 使用字典批量存储以提高效率
+                parent_dict = {}
+                for parent in all_parent_docs:
+                    parent_id = parent.metadata.get("parent_id")
+                    if parent_id:
+                        parent_dict[parent_id] = pickle.dumps(parent)
+                if parent_dict:
+                    store.mset(list(parent_dict.items()))
+                print(f"✅ 首次全量构建完成：子块{len(all_child_docs)}个，父块{len(all_parent_docs)}个")
+            else:
+                vector_db = Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
+                print("⚠️ 本地文档文件夹为空，向量库为空")
         else:
             vector_db = Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
-            print("⚠️ 本地文档文件夹为空，向量库为空")
-    else:
-        vector_db = Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
-        print(f"✅ 加载已有向量库：{PERSIST_DIR}")
-    return vector_db
-    # except Exception as e:
-    #     print(f"向量库初始化失败：{str(e)}")
-    #     # 返回空向量库，避免程序崩溃
-    #     return Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
+            print(f"✅ 加载已有向量库：{PERSIST_DIR}")
+        return vector_db
+    except Exception as e:
+        print(f"向量库初始化失败：{str(e)}")
+        # 返回空向量库，避免程序崩溃
+        return Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
 
 
 def get_vector_db():

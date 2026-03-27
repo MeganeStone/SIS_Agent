@@ -1,5 +1,4 @@
 import requests
-import json
 from typing import List, Optional, Any, Dict
 from langchain_classic.retrievers.document_compressors.base import BaseDocumentCompressor
 from langchain_core.documents import Document
