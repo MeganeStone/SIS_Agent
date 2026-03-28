@@ -29,7 +29,7 @@ from langchain.agents.middleware import SummarizationMiddleware
 from langsmith import traceable
 
 # 注意：如果你的tools/rag_new/vector_db_new文件路径不对，需自行调整
-from tools import translate_excel_tool, translate_ppt_tool, create_rag_qa_tool, web_search  # 导入翻译工具和RAG工具
+from tools import translate_file_tool, create_rag_qa_tool, web_search  # 导入翻译工具和RAG工具
 from rag_new import build_qa_chain  # 导入RAG问答链函数
 from vector_db_new import TBOX_DOCS_DIR, diff_update_vector_db, get_local_docs_info, get_vector_db  # 导入文档目录配置
 
@@ -72,11 +72,9 @@ def create_tbox_agent():
     ### 可用工具列表
     1. rag：仅用于回答公司业务相关问题（如项目体制、详细设计、测试手法等）
        - 参数格式（必须是合法JSON）：{"question":"用户的业务问题"}
-    2. ppt翻译：仅用于翻译PPT文件
-       - 参数格式（必须是合法JSON）：{"file_name":"文件名.pptx","target_lang":"目标语言"}
-    3. excel翻译：仅用于翻译Excel文件
-       - 参数格式（必须是合法JSON）：{"file_name":"文件名.xlsx","target_lang":"目标语言"}
-    4. web_search：仅用于搜索网络信息
+    2. 文件翻译：仅用于翻译文件（.pptx、.xlsx等）
+       - 参数格式（必须是合法JSON）：{"file_name":"文件名","target_lang":"目标语言"}
+    3. web_search：仅用于搜索网络信息
        - 参数格式（必须是合法JSON）：{"query":"搜索查询词"}
 
 
@@ -100,7 +98,7 @@ def create_tbox_agent():
     # 步骤3：创建工具（依赖注入：传入qa_chain）
     rag_qa_tool = create_rag_qa_tool(qa_chain)  # RAG工具
     # 步骤4：构建工具列表
-    tools = [translate_excel_tool, translate_ppt_tool, rag_qa_tool, web_search]  # 工具列表
+    tools = [translate_file_tool, rag_qa_tool, web_search]  # 工具列表
     # 创建Agent
     agent = create_agent(
         model=LLM, 

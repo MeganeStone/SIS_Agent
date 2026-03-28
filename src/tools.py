@@ -17,12 +17,10 @@ import json
 
 # 在tbox_doc_agent.py的顶部导入自定义翻译模块
 from tbox_custom_translator import (
-    translate_ppt_file,
-    translate_excel_file,
+    translate_file,
     DEFAULT_INPUT_DIR,
     DEFAULT_OUTPUT_DIR,
-    DEFAULT_TARGET_LANG,
-    DEFAULT_DELAY
+    DEFAULT_TARGET_LANG
 )
 
 @tool
@@ -120,37 +118,20 @@ class TranslateFileInput(BaseModel):
     output_dir: Optional[str] = Field(default=DEFAULT_OUTPUT_DIR, description="输出目录，默认D:\\seki\\AI\\copilotTest\\output")
     target_lang: Optional[str] = Field(default=DEFAULT_TARGET_LANG, description="目标语言，默认日语")
 
-# 封装PPT翻译Tool
-def _wrap_ppt_translation(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, 
+# 封装文件翻译Tool
+def _wrap_translation(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, 
                           output_dir: str = DEFAULT_OUTPUT_DIR, target_lang: str = DEFAULT_TARGET_LANG) -> str:
-    '''用于翻译PPT文件（.pptx），支持自定义源目录、输出目录和目标语言，默认翻译为日语'''
+    '''用于翻译文件（.pptx、.xlsx等），支持自定义源目录、输出目录和目标语言，默认翻译为日语'''
     try:
-        return translate_ppt_file(file_name, source_dir, output_dir, target_lang)
+        return translate_file(file_name, source_dir, output_dir, target_lang)
     except Exception as e:
-        raise ToolException(f"PPT翻译工具调用失败: {str(e)}")
-
-# 封装Excel翻译Tool
-def _wrap_excel_translation(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, 
-                           output_dir: str = DEFAULT_OUTPUT_DIR, target_lang: str = DEFAULT_TARGET_LANG) -> str:
-    '''用于翻译Excel文件（.xlsx），支持自定义源目录、输出目录和目标语言，默认翻译为日语'''
-    try:
-        return translate_excel_file(file_name, source_dir, output_dir, target_lang)
-    except Exception as e:
-        raise ToolException(f"Excel翻译工具调用失败: {str(e)}")
+        raise ToolException(f"文件翻译工具调用失败: {str(e)}")
 
 # 构建结构化Tool
-translate_ppt_tool = StructuredTool.from_function(
-    func=_wrap_ppt_translation,
-    name="ppt翻译",
-    description="用于翻译PPT文件（.pptx），支持自定义源目录、输出目录和目标语言，默认翻译为日语",
-    args_schema=TranslateFileInput,
-    handle_tool_error=True
-)
-
-translate_excel_tool = StructuredTool.from_function(
-    func=_wrap_excel_translation,
-    name="excel翻译",
-    description="用于翻译Excel文件（.xlsx），保留所有元素（单元格、文本框、图形），支持自定义目录和目标语言，默认翻译为日语",
+translate_file_tool = StructuredTool.from_function(
+    func=_wrap_translation,
+    name="文件翻译",
+    description="用于翻译文件（.pptx、.xlsx等），支持自定义源目录、输出目录和目标语言，默认翻译为日语",
     args_schema=TranslateFileInput,
     handle_tool_error=True
 )
