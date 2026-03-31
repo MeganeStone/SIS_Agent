@@ -7,6 +7,7 @@ import httpx
 from langchain_core.tools import ToolException
 from translate_ppt import translate_ppt_file
 from translate_excel import translate_excel_file
+from translate_word import translate_word_file
 
 # ---------------------- 全局配置（你的默认目录） ----------------------
 DEFAULT_INPUT_DIR = r"D:\seki\AI\copilotTest\input"
@@ -21,6 +22,9 @@ def translate_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, output_d
         return translate_ppt_file(file_name, source_dir, output_dir, target_lang, delay)
     elif ext == ".xlsx":
         return translate_excel_file(file_name, source_dir, output_dir, target_lang, delay)
+    elif ext in [".docx", ".doc"]:
+        return translate_word_file(file_name, source_dir, output_dir, target_lang, delay)
+
     else:
         raise ToolException(f"不支持的文件类型: {ext}，仅支持.pptx和.xlsx")
 
@@ -31,7 +35,7 @@ if __name__ == "__main__":
     from pathlib import Path
 
     # ============== 测试配置 ==============
-    TEST_FILE = "test.xlsx"  # 测试文件名
+    TEST_FILE = "test.docx"  # 测试文件名
     TEST_INPUT_DIR = Path(DEFAULT_INPUT_DIR)
     TEST_OUTPUT_DIR = Path(DEFAULT_OUTPUT_DIR)
     
@@ -57,7 +61,7 @@ if __name__ == "__main__":
             file_name=TEST_FILE,
             source_dir=DEFAULT_INPUT_DIR,
             output_dir=DEFAULT_OUTPUT_DIR,
-            target_lang="日语",
+            target_lang="中文",
             delay=DEFAULT_DELAY
         )
         elapsed = time.time() - start_time
@@ -70,7 +74,7 @@ if __name__ == "__main__":
         print("="*50)
         
         # 检查输出文件
-        output_path = Path(DEFAULT_OUTPUT_DIR) / f"{TEST_FILE.split('.')[0]}_{DEFAULT_TARGET_LANG}.xlsx"
+        output_path = Path(DEFAULT_OUTPUT_DIR) / f"{TEST_FILE.split('.')[0]}_{DEFAULT_TARGET_LANG}.docx"
         if output_path.exists():
             print(f"✓ 输出文件已生成: {output_path.resolve()}")
             print(f"✓ 文件大小: {output_path.stat().st_size} 字节")
