@@ -73,15 +73,6 @@ if __name__ == "__main__":
         print(f"输出文件: {Path(result).resolve()}")
         print("="*50)
         
-        # 检查输出文件
-        output_path = Path(DEFAULT_OUTPUT_DIR) / f"{TEST_FILE.split('.')[0]}_{DEFAULT_TARGET_LANG}.docx"
-        if output_path.exists():
-            print(f"✓ 输出文件已生成: {output_path.resolve()}")
-            print(f"✓ 文件大小: {output_path.stat().st_size} 字节")
-        else:
-            print(f"❌ 输出文件未生成: {output_path.resolve()}")
-            print("提示：可能因路径特殊字符导致文件未创建")
-        
     except Exception as e:
         print(f"\n❌ 翻译测试失败: {str(e)}")
         print("详细错误:")
