@@ -27,6 +27,8 @@ from langchain_core.messages import AIMessageChunk, ToolMessageChunk
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain.agents.middleware import SummarizationMiddleware
 from langsmith import traceable
+import asyncio
+import nest_asyncio
 
 # 注意：如果你的tools/rag_new/vector_db_new文件路径不对，需自行调整
 from tools import translate_file_tool, create_rag_qa_tool, web_search  # 导入翻译工具和RAG工具
@@ -38,6 +40,8 @@ st.set_page_config(
     page_icon="🚗",
     layout="wide"
 )
+# 应用 nest_asyncio 以允许在已有事件循环中运行新的 asyncio.run()
+nest_asyncio.apply()
 # ====================== 第一步：基础配置（大模型/嵌入/文本分割） ======================
 # 1. 通义千问大模型配置 
 if not DASHSCOPE_API_KEY or DASHSCOPE_API_KEY == "sk-10579025107e412983a48273c2ff7d3f":
@@ -186,118 +190,65 @@ def main():
     # 核心：单个对话框
     user_input = st.chat_input("请输入您的指令（例如：把test.pptx翻译成日语、TBOX项目的PM是谁？）")
     if user_input:
-        # 记录用户输入
         st.session_state.messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
 
-        # Agent处理指令
         with st.chat_message("assistant"):
-            # 单个占位符，实时更新整个消息内容
             message_placeholder = st.empty()
-            # 初始状态，覆盖模型首字延迟
             message_placeholder.markdown("🤔 思考中...")
 
-            # ========== 核心修改1：重构状态变量 ==========
-            current_status = "🤔 思考中..."  # 当前动态状态提示
-            final_answer = ""               # 最终要显示的回答内容
-            is_tool_running = False         # 是否正在执行工具调用
-            current_tool_name = ""          # 当前执行的工具名
+            # 定义一个异步函数来处理 astream_events
+            async def process_with_events():
+                final_answer = ""
+                current_tool_name = ""
 
-            def update_display(cursor=True):
-                """更新显示：优先显示动态状态，最终只显示回答"""
-                display_content = ""
-                # 1. 如果工具正在运行，显示工具状态
-                if is_tool_running and current_tool_name:
-                    display_content = f"🔧 正在调用 {current_tool_name}..."
-                # 2. 否则显示思考状态（如果还没生成回答）
-                elif not final_answer:
-                    display_content = current_status
-                # 3. 有回答内容时，显示回答
-                else:
-                    display_content = final_answer.replace('\n', '<br>')
-                
-                # 添加光标（仅在未完成时）
-                if cursor and (is_tool_running or not final_answer):
-                    display_content += '▌'
-                
-                message_placeholder.markdown(display_content, unsafe_allow_html=True)
+                # 配置参数
+                config = {"configurable": {"thread_id": "1"}}
 
-            try:
-                # 关键：转换为Agent要求的入参格式
-                invoke_input = {
-                    "messages": [HumanMessage(content=user_input)]
-                }
-                for mode, data in st.session_state.agent.stream(
-                    invoke_input,
-                    stream_mode=["messages", "updates"],
-                    config = {"configurable": {"thread_id": "1"}}
+                # 使用 astream_events 遍历事件
+                async for event in st.session_state.agent.astream_events(
+                    {"messages": [HumanMessage(content=user_input)]},
+                    config=config,
+                    version="v2"
                 ):
-                    if mode == "updates":
-                        # ========== 核心修改2：修正节点状态判断 ==========
-                        for node_name, node_output in data.items():
-                            # 情况1：model节点 + 工具调用标记 = 正在调用工具
-                            if node_name == "model":
-                                try:
-                                    # 获取模型返回的元数据：finish_reason
-                                    last_msg = node_output["messages"][-1]
-                                    finish_reason = last_msg.response_metadata.get("finish_reason", "")
-                                    tool_calls = last_msg.tool_calls
+                    kind = event["event"]
+                    # 1. 工具调用开始
+                    if kind == "on_tool_start":
+                        current_tool_name = event.get("name", "工具")
+                        # 更新 UI（需要在异步中调用 streamlit 的 UI 更新）
+                        message_placeholder.markdown(f"🔧 正在调用 {current_tool_name}工具...")
+                    # 2. 工具调用结束
+                    # elif kind == "on_tool_end":
+                    #     message_placeholder.markdown(f"{current_tool_name}执行结束🤔 正在整理回答...")
+                    elif kind == "on_retriever_start":
+                        message_placeholder.markdown(f"🔍 正在检索文档...")
+                    elif kind == "on_retriever_end":
+                        message_placeholder.markdown(f"🔍 文档检索完成...")
+                    # 3. 模型流式输出 token
+                    elif kind == "on_chat_model_stream":
+                        chunk = event["data"]["chunk"]
+                        if hasattr(chunk, "content") and chunk.content:
+                            final_answer += chunk.content
+                            # 实时显示累积回答（如果工具未在执行）
+                            # if tool_in_progress:
+                            #     final_answer += f" 🔧 正在调用 {current_tool_name}..."
+                            message_placeholder.markdown(final_answer + "▌")
+                    # 4. 可选：模型开始/结束事件，可以不加额外处理
+                return final_answer
 
-                                    # 关键判断：模型决定调用工具
-                                    if finish_reason == "tool_calls" and tool_calls:
-                                        is_tool_running = True
-                                        # 提取工具名
-                                        current_tool_name = tool_calls[0]["name"]
-                                    else:
-                                        is_tool_running = False
-                                except:
-                                    print("1.无法解析模型输出的工具调用信息，默认不显示工具状态")
-                                    is_tool_running = False
-                            
-                            # 情况2：tools节点 = 工具执行中
-                            elif node_name == "tools":
-                                is_tool_running = True
-                                try:
-                                    last_msg = node_output["messages"][-1]
-                                    current_tool_name = last_msg.name
-                                except:
-                                    print("2.无法解析工具节点的工具名，默认显示通用工具状态")
-                                    current_tool_name = "工具"
-                            elif node_name in ["agent"]:
-                                # 模型/思考节点：标记工具已结束，显示思考状态
-                                is_tool_running = False
-                                current_status = "🤔 正在思考..."
-                            else:
-                                # 其他节点：通用处理
-                                is_tool_running = False
-                                current_status = f"⏳ 执行步骤: {node_name}"
-                        # 更新显示（工具/思考状态）
-                        update_display(cursor=True)
+            # 同步调用异步函数
+            try:
+                # 获取当前事件循环，如果没有则创建
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
 
-                    elif mode == "messages":
-                        message_chunk, metadata = data
-
-                        # 处理AI回答消息（累积最终回答）
-                        if isinstance(message_chunk, AIMessageChunk) and metadata.get("langgraph_node") == "model":
-                            token = message_chunk.content
-                            if token:
-                                final_answer += token
-                            # 工具已结束，显示回答内容
-                            is_tool_running = False
-                            update_display(cursor=True)
-
-                # ========== 核心修改4：最终显示（仅保留回答，移除所有状态提示） ==========
-                message_placeholder.markdown(final_answer, unsafe_allow_html=True)
-
-                # 存储最终回答到历史
-                st.session_state.messages.append({"role": "assistant", "content": final_answer})
-
-            except Exception as e:
-                message_placeholder.empty()
-                error_msg = f"处理失败：{type(e).__name__} - {str(e)}"
-                st.error(error_msg)
-                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+            final_answer = loop.run_until_complete(process_with_events())
+            # 最终显示去除光标
+            message_placeholder.markdown(final_answer)
+            st.session_state.messages.append({"role": "assistant", "content": final_answer})
 
 # ====================== 运行入口 ======================
 if __name__ == "__main__":

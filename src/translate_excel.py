@@ -284,8 +284,6 @@ def translate_excel_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, ou
     翻译Excel文件（并行版）：按工作表拆分为临时文件，多线程并行翻译，最后合并。
     支持保留所有格式、图形、图表等。
     """
-    global _translation_cache
-    _translation_cache = {}  # 清空缓存
     
     input_path = os.path.abspath(os.path.join(source_dir, file_name)).replace("/", "\\")
     output_path = os.path.abspath(os.path.join(output_dir, f"{os.path.splitext(file_name)[0]}_{target_lang}{os.path.splitext(file_name)[1]}")).replace("/", "\\")
@@ -323,7 +321,7 @@ def translate_excel_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, ou
         _merge_excel_from_temp_files(input_path, translated_temp_files, output_path)
         
         # 4. 清理
-        _translation_cache.clear()
+        # _translation_cache.clear()
         gc.collect()
         return f"Excel翻译完成！输出路径: {output_path}"
     

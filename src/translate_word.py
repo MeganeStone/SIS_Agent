@@ -117,9 +117,6 @@ def translate_word_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR,
     if ext != ".docx":
         raise ToolException(f"不支持的文件类型: {ext}，仅支持 .docx")
 
-    global _translation_cache
-    _translation_cache = {}
-
     input_path = os.path.abspath(os.path.join(source_dir, file_name))
     output_path = os.path.abspath(os.path.join(
         output_dir,
@@ -183,6 +180,6 @@ def translate_word_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR,
     doc.save(output_path)
     print(f"✅ 翻译完成: {output_path}")
 
-    _translation_cache.clear()
+    # _translation_cache.clear()
     gc.collect()
     return f"Word翻译完成！输出路径: {output_path}"

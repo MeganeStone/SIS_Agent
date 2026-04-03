@@ -20,9 +20,7 @@ def translate_ppt_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, outp
     """
     翻译PPT文件（并行版）：按幻灯片分组并行翻译，每组内顺序翻译，保持上下文连贯。
     """
-    global _translation_cache
-    _translation_cache = {}  # 清空缓存
-    
+
     input_path = os.path.abspath(os.path.join(source_dir, file_name))
     output_path = os.path.abspath(os.path.join(output_dir, f"{os.path.splitext(file_name)[0]}_{target_lang}{os.path.splitext(file_name)[1]}"))
     
@@ -114,7 +112,7 @@ def translate_ppt_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, outp
     prs.save(output_path)
     
     # 清理
-    _translation_cache.clear()
+    # _translation_cache.clear()
     gc.collect()
     
     return f"PPT翻译完成！输出路径: {output_path}"
