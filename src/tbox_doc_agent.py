@@ -196,21 +196,22 @@ def main():
             st.markdown(user_input)
 
         with st.chat_message("assistant"):
+            stats_placeholder = st.empty()  # 用于显示状态信息
+            stats_placeholder.markdown("🤔 思考中...")
             message_placeholder = st.empty()
-            message_placeholder.markdown("🤔 思考中...")
 
             # 定义一个异步函数来处理 astream_events
             async def process_with_events():
                 # ----- 预算控制变量 -----
                 MAX_TURNS = 10                 # 最大循环轮数（LLM 调用次数）
-                MAX_BUDGET_TOKENS = 100000     # 最大总 token 预算
+                MAX_BUDGET_TOKENS = 10000     # 最大总 token 预算
                 
                 turn_count = 0                 # 当前轮数
                 total_input_tokens = 0
                 total_output_tokens = 0
                 total_all_tokens = 0
                 
-                stats_placeholder = st.empty()  # 用于显示统计信息
+                token_placeholder = st.empty()  # 用于显示 token 统计
                 should_stop = False
                 final_answer = ""
                 current_tool_name = ""
@@ -221,43 +222,32 @@ def main():
                     "recursion_limit": MAX_TURNS
                 }
                 
-                async for event in st.session_state.agent.astream_events(
+                # ⭐ 关键：保存异步生成器对象，以便在 finally 中正确关闭
+                event_stream = st.session_state.agent.astream_events(
                     {"messages": [HumanMessage(content=user_input)]},
                     config=config,
                     version="v2"
-                ):
+                )
+                async for event in event_stream:
                     kind = event["event"]
                     
                     # ------------------- 工具相关 -------------------
                     if kind == "on_tool_start":
                         current_tool_name = event.get("name", "工具")
                         stats_placeholder.markdown(f"🔧 正在调用 {current_tool_name} 工具...")
-                                       
+                                    
                     # ------------------- 检索（可选）-------------------
                     elif kind == "on_retriever_start":
                         stats_placeholder.markdown(f"🔍 正在检索文档...")
                     elif kind == "on_retriever_end":
-                        stats_placeholder.markdown(f"🔍 文档检索完成")
+                        stats_placeholder.markdown(f"🔍 文档检索完成，正在整理答案...")
                     
                     # ------------------- 流式输出（实时显示回答）-------------------
                     elif kind == "on_chat_model_stream":
                         chunk = event["data"]["chunk"]
-                        if hasattr(chunk, "content") and chunk.content and event["data"].get("response_metadata", {}).get("langgraph_node") != "SummarizationMiddleware.before_model":
+                        if hasattr(chunk, "content") and chunk.content and event.get("metadata", {}).get("langgraph_node") != "SummarizationMiddleware.before_model":
                             final_answer += chunk.content
                             message_placeholder.markdown(final_answer + "▌")
-
-                        stats_placeholder.markdown(f"""
-                            **📊 实时统计**  
-                            - 轮数: {turn_count} / {MAX_TURNS}  
-                            - 输入 token: {total_input_tokens}  
-                            - 输出 token: {total_output_tokens}
-                            - **累计总消耗: {total_all_tokens} / {MAX_BUDGET_TOKENS}**  
-                            """)
-
-                        if total_all_tokens >= MAX_BUDGET_TOKENS:
-                                should_stop = True
-                                stats_placeholder.markdown(f"🚨 **预算超限！累计 {total_all_tokens} token 已达到上限 {MAX_BUDGET_TOKENS}，任务终止。**")
-                                break
                     
                     # ------------------- ⭐ 关键：Chat Model 调用结束 -------------------
                     elif kind == "on_chat_model_end":
@@ -284,7 +274,7 @@ def main():
                         total_all_tokens = total_input_tokens + total_output_tokens
                         
                         # 更新 UI 统计
-                        stats_placeholder.markdown(f"""
+                        token_placeholder.markdown(f"""
                         **📊 实时统计**  
                         - 轮数: {turn_count} / {MAX_TURNS}  
                         - 输入 token: {total_input_tokens}  
@@ -295,13 +285,13 @@ def main():
                         # 检查轮数超限
                         if turn_count >= MAX_TURNS:
                             should_stop = True
-                            stats_placeholder.markdown(f"🚨 **轮数已达上限 {MAX_TURNS}，任务终止。**")
+                            token_placeholder.markdown(f"🚨 **轮数已达上限 {MAX_TURNS}，任务终止。**")
                             break
                         
                         # 检查预算超限
                         if total_all_tokens >= MAX_BUDGET_TOKENS:
                             should_stop = True
-                            stats_placeholder.markdown(f"🚨 **预算超限！累计 {total_all_tokens} token 已达到上限 {MAX_BUDGET_TOKENS}，任务终止。**")
+                            token_placeholder.markdown(f"🚨 **预算超限！累计 {total_all_tokens} token 已达到上限 {MAX_BUDGET_TOKENS}，任务终止。**")
                             break
                 
                 # 如果因超限终止，返回提示
@@ -311,6 +301,14 @@ def main():
                     return final_answer
                 
                 return final_answer
+                # except Exception as e:
+                #     error_msg = f"❌ 处理过程中发生错误：{str(e)}"
+                #     message_placeholder.markdown(error_msg)
+                #     print(error_msg)
+                #     return error_msg   
+                # finally:
+                #     # ⭐⭐⭐ 关键：确保异步生成器被正确关闭，避免资源泄露 ⭐⭐⭐
+                #     await event_stream.aclose()
 
             # 同步调用异步函数
             try:
@@ -321,6 +319,8 @@ def main():
                 asyncio.set_event_loop(loop)
 
             final_answer = loop.run_until_complete(process_with_events())
+            # 清除占位符内容（页面上直接消失）
+            stats_placeholder.empty()
             # 最终显示去除光标
             message_placeholder.markdown(final_answer)
             st.session_state.messages.append({"role": "assistant", "content": final_answer})
