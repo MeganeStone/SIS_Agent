@@ -52,7 +52,8 @@ LLM = ChatOpenAI(
     api_key=DASHSCOPE_API_KEY,
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     timeout=300,
-    extra_body={"enable_search": True}
+    extra_body={"enable_search": True},
+    stream_options={"include_usage": True},
 )
 
 # 1. 主线程初始化向量库（有SessionContext，可加st提示）
@@ -200,41 +201,115 @@ def main():
 
             # 定义一个异步函数来处理 astream_events
             async def process_with_events():
+                # ----- 预算控制变量 -----
+                MAX_TURNS = 10                 # 最大循环轮数（LLM 调用次数）
+                MAX_BUDGET_TOKENS = 100000     # 最大总 token 预算
+                
+                turn_count = 0                 # 当前轮数
+                total_input_tokens = 0
+                total_output_tokens = 0
+                total_all_tokens = 0
+                
+                stats_placeholder = st.empty()  # 用于显示统计信息
+                should_stop = False
                 final_answer = ""
                 current_tool_name = ""
-
-                # 配置参数
-                config = {"configurable": {"thread_id": "1"}}
-
-                # 使用 astream_events 遍历事件
+                
+                # 配置：限制最大循环步数（LangGraph 原生支持）
+                config = {
+                    "configurable": {"thread_id": "1"},
+                    "recursion_limit": MAX_TURNS
+                }
+                
                 async for event in st.session_state.agent.astream_events(
                     {"messages": [HumanMessage(content=user_input)]},
                     config=config,
                     version="v2"
                 ):
                     kind = event["event"]
-                    # 1. 工具调用开始
+                    
+                    # ------------------- 工具相关 -------------------
                     if kind == "on_tool_start":
                         current_tool_name = event.get("name", "工具")
-                        # 更新 UI（需要在异步中调用 streamlit 的 UI 更新）
-                        message_placeholder.markdown(f"🔧 正在调用 {current_tool_name}工具...")
-                    # 2. 工具调用结束
-                    # elif kind == "on_tool_end":
-                    #     message_placeholder.markdown(f"{current_tool_name}执行结束🤔 正在整理回答...")
+                        stats_placeholder.markdown(f"🔧 正在调用 {current_tool_name} 工具...")
+                                       
+                    # ------------------- 检索（可选）-------------------
                     elif kind == "on_retriever_start":
-                        message_placeholder.markdown(f"🔍 正在检索文档...")
+                        stats_placeholder.markdown(f"🔍 正在检索文档...")
                     elif kind == "on_retriever_end":
-                        message_placeholder.markdown(f"🔍 文档检索完成...")
-                    # 3. 模型流式输出 token
+                        stats_placeholder.markdown(f"🔍 文档检索完成")
+                    
+                    # ------------------- 流式输出（实时显示回答）-------------------
                     elif kind == "on_chat_model_stream":
                         chunk = event["data"]["chunk"]
-                        if hasattr(chunk, "content") and chunk.content:
+                        if hasattr(chunk, "content") and chunk.content and event["data"].get("response_metadata", {}).get("langgraph_node") != "SummarizationMiddleware.before_model":
                             final_answer += chunk.content
-                            # 实时显示累积回答（如果工具未在执行）
-                            # if tool_in_progress:
-                            #     final_answer += f" 🔧 正在调用 {current_tool_name}..."
                             message_placeholder.markdown(final_answer + "▌")
-                    # 4. 可选：模型开始/结束事件，可以不加额外处理
+
+                        stats_placeholder.markdown(f"""
+                            **📊 实时统计**  
+                            - 轮数: {turn_count} / {MAX_TURNS}  
+                            - 输入 token: {total_input_tokens}  
+                            - 输出 token: {total_output_tokens}
+                            - **累计总消耗: {total_all_tokens} / {MAX_BUDGET_TOKENS}**  
+                            """)
+
+                        if total_all_tokens >= MAX_BUDGET_TOKENS:
+                                should_stop = True
+                                stats_placeholder.markdown(f"🚨 **预算超限！累计 {total_all_tokens} token 已达到上限 {MAX_BUDGET_TOKENS}，任务终止。**")
+                                break
+                    
+                    # ------------------- ⭐ 关键：Chat Model 调用结束 -------------------
+                    elif kind == "on_chat_model_end":
+                        turn_count += 1
+                        
+                        # 获取完整的 AIMessage（不是 Chunk）
+                        output_msg = event["data"]["output"]
+                        
+                        # 提取 token 用量（新版 LangChain 使用 usage_metadata）
+                        input_toks = 0
+                        output_toks = 0
+                        try:
+                            # 方式1：usage_metadata（推荐）
+                            if hasattr(output_msg, "usage_metadata") and output_msg.usage_metadata:
+                                input_toks = output_msg.usage_metadata.get("input_tokens", 0)
+                                output_toks = output_msg.usage_metadata.get("output_tokens", 0)
+                                print(f"✅ 从 usage_metadata 提取 token：输入 {input_toks}，输出 {output_toks}")
+                                
+                        except Exception as e:
+                            print(f"提取 token 失败: {e}")
+                        
+                        total_input_tokens += input_toks
+                        total_output_tokens += output_toks
+                        total_all_tokens = total_input_tokens + total_output_tokens
+                        
+                        # 更新 UI 统计
+                        stats_placeholder.markdown(f"""
+                        **📊 实时统计**  
+                        - 轮数: {turn_count} / {MAX_TURNS}  
+                        - 输入 token: {total_input_tokens}  
+                        - 输出 token: {total_output_tokens}
+                        - **累计总消耗: {total_all_tokens} / {MAX_BUDGET_TOKENS}**  
+                        """)
+                        
+                        # 检查轮数超限
+                        if turn_count >= MAX_TURNS:
+                            should_stop = True
+                            stats_placeholder.markdown(f"🚨 **轮数已达上限 {MAX_TURNS}，任务终止。**")
+                            break
+                        
+                        # 检查预算超限
+                        if total_all_tokens >= MAX_BUDGET_TOKENS:
+                            should_stop = True
+                            stats_placeholder.markdown(f"🚨 **预算超限！累计 {total_all_tokens} token 已达到上限 {MAX_BUDGET_TOKENS}，任务终止。**")
+                            break
+                
+                # 如果因超限终止，返回提示
+                if should_stop:
+                    final_answer = f"❌ 任务已终止：达到限制（轮数 {turn_count}/{MAX_TURNS}，总 token {total_all_tokens}/{MAX_BUDGET_TOKENS}）。请简化问题或增加限额后重试。"
+                    message_placeholder.markdown(final_answer)
+                    return final_answer
+                
                 return final_answer
 
             # 同步调用异步函数
