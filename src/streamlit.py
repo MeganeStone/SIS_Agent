@@ -98,7 +98,7 @@ def main():
             async def process_with_events():
                 # ----- 预算控制变量 -----
                 MAX_TURNS = 20                 # 最大循环轮数（LLM 调用次数）
-                MAX_BUDGET_TOKENS = 100000     # 最大总 token 预算
+                MAX_BUDGET_TOKENS = 800000     # 最大总 token 预算
                 
                 total_input_tokens = 0
                 total_output_tokens = 0
@@ -143,7 +143,7 @@ def main():
                     # ------------------- 流式输出（实时显示回答）-------------------
                     elif kind == "on_chat_model_stream":
                         chunk = event["data"]["chunk"]
-                        if hasattr(chunk, "content") and chunk.content and event.get("metadata", {}).get("langgraph_node") != "SummarizationMiddleware.before_model":
+                        if hasattr(chunk, "content") and chunk.content and event.get("metadata", {}).get("langgraph_node") == "model":
                             final_answer += chunk.content
                             message_placeholder.markdown(final_answer + "▌")
                     

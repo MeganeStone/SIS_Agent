@@ -52,16 +52,8 @@ def create_transfer_to_code_tool(code_agent_node_name: str = "code_agent"):
     @tool
     def transfer_to_code_agent(runtime: ToolRuntime) -> Command:
         """将对话交接给代码助手（处理代码编写/执行问题,操作本地文件，回答由代码助手创建或修改的文件相关的问题时）"""
-        # state = runtime.state
-        # messages = state["messages"]
-        # last_ai = next((msg for msg in reversed(messages) if isinstance(msg, AIMessage)), None)
-        # transfer_msg = ToolMessage(
-        #     content="已从主 Agent 交接给代码助手",
-        #     tool_call_id=runtime.tool_call_id,
-        # )
         update_dict = {
             "active_agent": code_agent_node_name,
-            # "messages": [last_ai, transfer_msg] if last_ai else [transfer_msg],
         }
         return Command(goto=code_agent_node_name, update=update_dict, graph=Command.PARENT)
     return transfer_to_code_agent

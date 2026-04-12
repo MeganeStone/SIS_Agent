@@ -8,7 +8,6 @@ from langchain_openai import ChatOpenAI
 from langgraph.types import Command
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.messages import AIMessage, ToolMessage
-from typing import Optional
 
 # 复用主程序中的 LLM 配置（建议从环境变量读取）
 DASHSCOPE_API_KEY = "sk-10579025107e412983a48273c2ff7d3f"  # 或者从主程序传入
@@ -103,16 +102,8 @@ def create_transfer_to_main_tool(main_agent_name: str = "main_agent"):
     @tool
     def transfer_to_main_agent(runtime: ToolRuntime) -> Command:
         """将对话交还给主 Agent"""
-        # state = runtime.state
-        # messages = state["messages"]
-        # last_ai = next((msg for msg in reversed(messages) if isinstance(msg, AIMessage)), None)
-        # transfer_msg = ToolMessage(
-        #     content="已从代码助手交还给主 Agent",
-        #     tool_call_id=runtime.tool_call_id,
-        # )
         update_dict = {
             "active_agent": main_agent_name,
-            # "messages": [last_ai, transfer_msg] if last_ai else [transfer_msg],
         }
         return Command(goto=main_agent_name, update=update_dict, graph=Command.PARENT)
     return transfer_to_main_agent
