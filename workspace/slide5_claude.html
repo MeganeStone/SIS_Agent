@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+html { background: #FFFFFF; }
+body {
+  width: 720pt; height: 405pt; margin: 0; padding: 0;
+  background: #FFFFFF;
+  font-family: Arial, sans-serif;
+  display: flex;
+  flex-direction: column;
+}
+.header {
+  background: #181B24;
+  padding: 20pt 40pt;
+  width: calc(100% - 80pt);
+}
+h1 {
+  color: #B165FB;
+  font-size: 32pt;
+  font-weight: bold;
+  margin: 0;
+}
+.content {
+  flex: 1;
+  padding: 40pt;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.model-name {
+  color: #B165FB;
+  font-size: 42pt;
+  font-weight: bold;
+  margin: 0 0 20pt 0;
+  text-align: center;
+}
+.description {
+  color: #181B24;
+  font-size: 20pt;
+  line-height: 1.6;
+  margin: 0 0 30pt 0;
+  text-align: center;
+}
+.features {
+  display: flex;
+  justify-content: space-around;
+}
+.feature {
+  text-align: center;
+  width: 30%;
+}
+.feature-icon {
+  color: #40695B;
+  font-size: 36pt;
+  font-weight: bold;
+  margin: 0 0 10pt 0;
+}
+.feature-text {
+  color: #181B24;
+  font-size: 14pt;
+}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Claude AI Model</h1>
+</div>
+<div class="content">
+  <p class="model-name">Claude</p>
+  <p class="description">Anthropic's flagship AI assistant family</p>
+  <div class="features">
+    <div class="feature">
+      <p class="feature-icon">🤝</p>
+      <p class="feature-text">Helpful</p>
+    </div>
+    <div class="feature">
+      <p class="feature-icon">🛡️</p>
+      <p class="feature-text">Harmless</p>
+    </div>
+    <div class="feature">
+      <p class="feature-icon">✅</p>
+      <p class="feature-text">Honest</p>
+    </div>
+  </div>
+</div>
+</body>
+</html>
