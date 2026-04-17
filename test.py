@@ -11,8 +11,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from typing import Callable
 import yaml
 import os
+import sys
 import subprocess
+import base64
 
+BASE_SKILL_PATH = r"D:\seki\AI\Langchain\SIS_Agent\skills"
 # ===================== 1. 动态加载本地 Skills =====================
 SKILLS_FOLDER = "skills"
 class Skill(TypedDict):
@@ -48,39 +51,53 @@ def load_skill(skill_name: str) -> str:
     """加载完整的技能说明书"""
     for skill in SKILLS:
         if skill["name"] == skill_name:
-            return f"✅ 已加载技能：{skill_name}\n\n{skill['content']}"
+            target_dir = os.path.join(BASE_SKILL_PATH, skill_name)
+            os.chdir(target_dir)
+            return f"（当前工作目录已切换到 {target_dir}）,\n\n✅ 已加载技能：{skill_name}\n\n{skill['content']}"
     return f"❌ 未找到技能，可用：{', '.join(s['name'] for s in SKILLS)}"
 
 @tool
 def execute_shell(command: str) -> str:
     """
-    执行 Shell 命令（危险！建议限制白名单或沙箱）。
-    返回 stdout 和 stderr，完整输出所有信息，不隐藏错误。
+    执行 PowerShell 命令（不再支持 CMD），禁止执行Linux命令。
+    如需执行多行python代码，必须先调用write_file工具将代码写进临时文件，再执行文件。
+    当前执行目录固定为 SKILL 目录：D:\\seki\\AI\\Langchain\\SIS_Agent\\skills\\pptx，相对于项目根目录的地址为 skills\\pptx。
+    返回 stdout 和 stderr，完整输出所有信息。
     """
-    # ⚠️ 安全警告：这里应该做严格的命令过滤，禁止 rm -rf / 等
+    # 危险模式过滤
     dangerous = ["rm -rf", "dd if=", "mkfs", ":(){ :|:& };:"]
     for pat in dangerous:
         if pat in command:
             return f"拒绝执行包含危险模式 '{pat}' 的命令"
+
+    # 如果命令以 "python" 开头，替换为当前 Python 解释器的完整路径（带引号）
+    # 注意：在 PowerShell 中，直接替换成带引号的路径是安全的
+    if command.strip().startswith("python"):
+        command = command.replace("python", f'"{sys.executable}"', 1)
+
+    # 将命令转为 PowerShell 可接受的 Base64 编码（UTF-16LE）
+    # 这样可以避免引号、换行、特殊字符的转义问题
     try:
+        encoded = base64.b64encode(command.encode('utf-16le')).decode('ascii')
+    except Exception as e:
+        return f"[编码失败] {str(e)}"
+
+    try:
+        # 调用 powershell.exe，使用 -EncodedCommand
         result = subprocess.run(
-            command,
-            shell=True,
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
             capture_output=True,
             text=True,
             timeout=30,
-            # 固定为你的项目根目录！关键配置
-            cwd=r"D:\seki\AI\Langchain\SIS_Agent"
+            cwd=r"D:\seki\AI\Langchain\SIS_Agent\skills\pptx"
         )
-        
-        # 🔥 核心修改：拼接所有输出，不省略、不替换
+
         output = ""
         if result.stdout:
             output += f"[标准输出]\n{result.stdout}\n"
         if result.stderr:
             output += f"[错误输出]\n{result.stderr}\n"
-        
-        # 如果完全无输出，才返回提示
+
         return output.strip() if output else "[命令执行完成，无任何输出]"
 
     except subprocess.TimeoutExpired:
@@ -90,13 +107,22 @@ def execute_shell(command: str) -> str:
 
 @tool
 def read_file(file_path: str) -> str:
-    """读取文本文件内容（限制大小 1MB）。"""
+    """读取文本文件内容（限制大小 5MB）。"""
     if not os.path.exists(file_path):
         return f"文件不存在: {file_path}"
-    if os.path.getsize(file_path) > 1024 * 1024:
-        return "文件过大（>1MB），拒绝读取"
-    with open(file_path, "r", encoding="utf-8") as f:
-        return f.read()
+    if os.path.getsize(file_path) > 5 * 1024 * 1024:
+        return "文件过大（>5MB），拒绝读取"
+    encodings = ['utf-8', 'gbk', 'utf-16', 'utf-16-le', 'utf-16-be', 'latin-1']
+    for enc in encodings:
+        try:
+            with open(file_path, "r", encoding=enc) as f:
+                content = f.read()
+            # 成功读取后返回内容
+            return content
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    # 所有编码都失败，返回错误信息
+    return f"无法解码文件 {file_path}，尝试的编码: {', '.join(encodings)}"
 
 @tool
 def write_file(file_path: str, content: str) -> str:
@@ -126,9 +152,11 @@ class SkillMiddleware(AgentMiddleware):
 # 系统规则（严格遵守）
 1. 先使用 load_skill 加载对应技能说明书
 2. 严格按照说明书步骤执行
-3. 用 execute_shell 运行 ooxml/scripts/ 下的 Python 脚本
-4. 用 read_file / write_file 管理 JSON 配置文件
-5. 所有文件路径都基于项目根目录
+3. execute_shell工具的执行器是powershell，执行的命令必须符合powershell规范，严禁执行cmd和Linux命令。
+4. 用 execute_shell 运行 ooxml/scripts/ 下的 Python 脚本
+5. 用 read_file / write_file 管理 JSON 配置文件
+6. 如需执行单行python代码，直接使用execute_shell工具执行。
+7. 如需执行多行python代码，必须先使用write_file工具将代码写进本地临时文件（自己创建），再使用execute_shell运行Python文件。
 
 ## 可用技能
 {self.skills_prompt}
@@ -138,19 +166,28 @@ class SkillMiddleware(AgentMiddleware):
 
 # ===================== 5. 初始化 Agent =====================
 from langchain_openai import ChatOpenAI
-DASHSCOPE_API_KEY = "sk-10579025107e412983a48273c2ff7d3f"  # 或者从主程序传入
+DASHSCOPE_API_KEY = "ark-c7bd0c7a-c998-40c5-ae70-ada86b27fec8-c2dfa"  # 或者从主程序传入
 
+# BigPickle调用配置（完全免费，200K上下文）
 LLM = ChatOpenAI(
-    model="qwen3.5-plus",
+    model="big-pickle",  # 模型ID
     temperature=0.1,
-    api_key=DASHSCOPE_API_KEY,
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    extra_body={"enable_search": True},
+    api_key="sk-G7XhP7rgwqBckkFBdDEH64IXapISrFTVYL72u9UrzLx6cFneQQ44kiaKxWaWSJvW",  # 免费获取
+    base_url="https://opencode.ai/zen/v1",  # OpenCode Zen兼容接口
+    # 无需AK/SK，无需担心额度，编程Agent专用模型
 )
 
 agent = create_agent(
     model=LLM,
-    system_prompt="你是PPT自动化助手，严格按照技能说明书执行操作",
+    system_prompt="""
+    畅星集团（SIS）是一家以车联网、物联网及移动出行服务为核心竞争力的专业国际化公司，主要客户是本田，主要产品是TSU（Telematic System Unit）。
+    你是公司的PPT报告制作专家，擅长使用Python脚本处理和生成PPTX文件。公司业务面向的主要是日本车企，尤其是本田，因此你需要熟悉日语和日本文化，能够制作符合日本客户审美和习惯的PPT报告。
+    每当我们的TSU产品出现bug时，项目组会提供一个包含bug描述、复现步骤和相关日志分析等内容的文本文件或ppt文件，放在skills/pptx/ref/目录下。
+    你的任务是根据这些文件，以及放在skills/pptx/tmp/目录下的以前报告过的模板文件（如有），自动生成一份结构清晰、内容翔实的PPT报告，我们会将报告提交给客户。
+    但是以前报告过的模板文件仅供参考PPT格式、报告风格等，生成的报告的页数、内容等应该主要参照skills/pptx/ref/下的参考文档，无需和模板文件一模一样。
+    注意：如果任务是生成新的bug报告，你需要阅读skills/pptx/ref/目录下的所有文件，不要遗漏。
+    你必须严格遵守以下工具使用规则：
+    """,
     middleware=[SkillMiddleware()],
     checkpointer=InMemorySaver(),
 )
@@ -159,7 +196,7 @@ agent = create_agent(
 if __name__ == "__main__":
     config = {"configurable": {"thread_id": str(uuid7())}}
     result = agent.invoke({
-        "messages": [{"role": "user", "content": "帮我生成一份介绍Anthropic的PPT"}]
+        "messages": [{"role": "user", "content": "根据skills/pptx/ref/目录下的参考资料和skills/pptx/tmp/目录下的模板文件，帮我生成一份问题报告的PPT。要中文版的报告，内容要翔实，结构要清晰。"}]
     }, config)
     for msg in result["messages"]:
         msg.pretty_print()

@@ -1,14 +1,13 @@
 ---
 name: pptx
-description: "Presentation creation, editing, and analysis. When Claude needs to work with presentations (.pptx files) for: (1) Creating new presentations, (2) Modifying or editing content, (3) Working with layouts, (4) Adding comments or speaker notes, or any other presentation tasks"
-license: Proprietary. LICENSE.txt has complete terms
+description: "Presentation creation, editing, and analysis. When you needs to work with presentations (.pptx files) for: (1) Creating new presentations, (2) Modifying or editing content"
 ---
 
 # PPTX creation, editing, and analysis
 
 ## Overview
 
-A user may ask you to create, edit, or analyze the contents of a .pptx file. A .pptx file is essentially a ZIP archive containing XML files and other resources that you can read or edit. You have different tools and workflows available for different tasks.
+A user may ask you to create, edit, or analyze the contents of a .pptx file. A .pptx file is essentially a ZIP archive containing XML files and other resources that you can read or edit. You have different tools and workflows available for different tasks.All generated files are placed under the workspace folder, and you should reference them with the `workspace/` prefix (e.g., `workspace/presentation.pptx`).
 
 ## Reading and analyzing content
 
@@ -26,7 +25,7 @@ You need raw XML access for: comments, speaker notes, slide layouts, animations,
 #### Unpacking a file
 `python ooxml/scripts/unpack.py <office_file> <output_dir>`
 
-**Note**: The unpack.py script is located at `skills/pptx/ooxml/scripts/unpack.py` relative to the project root. If the script doesn't exist at this path, use `find . -name "unpack.py"` to locate it.
+**Note**: The unpack.py script is located at `skills/pptx/ooxml/scripts/unpack.py` relative to the project root. If the script doesn't exist at this path, use `dir /s /b unpack.py` to locate it.
 
 #### Key file structures
 * `ppt/presentation.xml` - Main presentation metadata and slide references
@@ -185,7 +184,7 @@ When you need to create a presentation that follows an existing template's desig
 
 ### Workflow
 1. **Extract template text AND create visual thumbnail grid**:
-   * Extract text: `python -m markitdown template.pptx > template-content.md`
+   * Extract text: `python -m markitdown template.pptx > template-content.md`.**Note**: The template PPT is located in the tmp/ folder.
    * Read `template-content.md`: Read the entire file to understand the contents of the template presentation. **NEVER set any range limits when reading this file.**
    * Create thumbnail grids: `python scripts/thumbnail.py template.pptx`
    * See [Creating Thumbnail Grids](#creating-thumbnail-grids) section for more details
