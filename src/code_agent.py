@@ -1,6 +1,6 @@
 # code_agent.py
 import subprocess
-import tempfile
+import sys
 import os
 from langchain.agents import create_agent
 from langchain.tools import tool, ToolRuntime
@@ -23,57 +23,45 @@ LLM = ChatOpenAI(
 checkpointer = InMemorySaver()
 # ---------- 工具定义 ----------
 @tool
-def execute_python(code: str) -> str:
-    """
-    执行 Python 代码，返回 stdout 和 stderr。
-    代码在临时文件中运行，超时 30 秒。
-    """
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
-        f.write(code)
-        temp_path = f.name
-    try:
-        result = subprocess.run(
-            ["python", temp_path],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            cwd=os.getcwd()
-        )
-        output = result.stdout
-        if result.stderr:
-            output += "\n[stderr]\n" + result.stderr
-        return output.strip() or "[执行成功，无输出]"
-    except subprocess.TimeoutExpired:
-        return "执行超时（30秒）"
-    finally:
-        os.unlink(temp_path)
-
-@tool
 def execute_shell(command: str) -> str:
     """
-    执行 Shell 命令（危险！建议限制白名单或沙箱）。
-    返回 stdout 和 stderr。
+    执行 Linux 命令。
+    如需执行多行python代码，必须先调用write_file工具将代码写进临时文件，再执行文件。
+    返回 stdout 和 stderr，完整输出所有信息。
     """
-    # ⚠️ 安全警告：这里应该做严格的命令过滤，禁止 rm -rf / 等
+    # 危险模式过滤
     dangerous = ["rm -rf", "dd if=", "mkfs", ":(){ :|:& };:"]
     for pat in dangerous:
         if pat in command:
             return f"拒绝执行包含危险模式 '{pat}' 的命令"
+
+    # 如果命令以 "python" 开头，替换为当前 Python 解释器的完整路径（带引号）
+    # 注意：在 PowerShell 中，直接替换成带引号的路径是安全的
+    if command.strip().startswith("python"):
+        command = command.replace("python", f'"{sys.executable}"', 1)
+
     try:
         result = subprocess.run(
-            command,
-            shell=True,
+            # Windows + WSL 下执行 Linux 命令
+            ["wsl", "bash", "-c", command],
             capture_output=True,
             text=True,
             timeout=30,
+            encoding='utf-8', 
+            # 关键：Windows路径 D:\xxx 会自动被 WSL 识别为 /mnt/d/xxx
             cwd=os.getcwd()
         )
-        output = result.stdout
+        output = ""
+        if result.stdout:
+            output += f"[标准输出]\n{result.stdout}\n"
         if result.stderr:
-            output += "\n[stderr]\n" + result.stderr
-        return output.strip() or "[执行成功，无输出]"
+            output += f"[错误输出]\n{result.stderr}\n"
+        return output.strip() if output else "[命令执行完成，无任何输出]"
+
     except subprocess.TimeoutExpired:
-        return "命令超时（30秒）"
+        return "[错误] 命令超时（30秒）"
+    except Exception as e:
+        return f"[执行异常] {str(e)}"
 
 @tool
 def read_file(file_path: str) -> str:
@@ -111,14 +99,13 @@ def create_transfer_to_main_tool(main_agent_name: str = "main_agent"):
 # ---------- 创建代码助手 Agent ----------
 def create_code_agent(main_agent_node_name: str = "main_agent"):
     """返回代码助手 Agent 实例"""
-    tools = [execute_python, execute_shell, read_file, write_file]
+    tools = [execute_shell, read_file, write_file]
     # 添加交接工具（动态生成，依赖主 Agent 节点名）
     transfer_tool = create_transfer_to_main_tool(main_agent_node_name)
     tools.append(transfer_tool)
     
     system_prompt = """你是一个代码助手，擅长编写、执行和调试代码。你的工具包括：
-- execute_python: 执行 Python 代码
-- execute_shell: 执行 Shell 命令
+- execute_shell: 执行 Linux 命令
 - read_file: 读取文件
 - write_file: 写入文件
 

@@ -1,330 +1,223 @@
 import re
-import os
 import gc
-import subprocess
-# ---------------------- LangChain 依赖 ----------------------
-from langchain_core.tools import ToolException
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import zipfile
 import tempfile
-import shutil
-import pythoncom
-import win32com.client as win32
-import win32process
-from translate_text import translate_text, _translation_cache
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import copy
+from lxml import etree as ET
+from langchain_core.tools import ToolException
+from translate_text import translate_text
 
-# ---------------------- 全局配置（你的默认目录） ----------------------
 DEFAULT_INPUT_DIR = r"D:\seki\AI\copilotTest\input"
 DEFAULT_OUTPUT_DIR = r"D:\seki\AI\copilotTest\output"
-DEFAULT_TARGET_LANG = "日语"  # 默认翻译目标语言
-DEFAULT_DELAY = 1.2  # 每次翻译后的延迟，单位秒（可调整，过快可能触发API限速）
+DEFAULT_TARGET_LANG = "日语"
+DEFAULT_DELAY = 1.2
+MAX_WORKERS = 6
 
-def _get_excel_pid(excel_app):
-    """获取Excel进程的PID"""
+def _is_meaningful_text(text: str) -> bool:
+    text = text.strip()
+    if len(text) <= 1:
+        return False
+    if text.isdigit():
+        return False
+    if all(c in '，。！？；：""''《》【】（）,.!?;:\'"`~@#$%^&*()_+=-' for c in text):
+        return False
+    return True
+
+def _translate_drawing_file(drawing_path, target_lang, delay, context):
+    print(f"[DEBUG] 开始处理 drawing 文件: {drawing_path}")
     try:
-        hwnd = excel_app.Hwnd
-        _, pid = win32process.GetWindowThreadProcessId(hwnd)
-        return pid
-    except Exception:
-        return None
+        parser = ET.XMLParser(remove_blank_text=True)
+        tree = ET.parse(drawing_path, parser)
+        root = tree.getroot()
+        a_uri = None
+        for prefix, uri in root.nsmap.items():
+            if prefix == 'a':
+                a_uri = uri
+                break
+        if not a_uri:
+            a_uri = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+        tag_p = f"{{{a_uri}}}p"
+        tag_r = f"{{{a_uri}}}r"
+        tag_t = f"{{{a_uri}}}t"
+        modified_count = 0
+        for p in root.iter(tag_p):
+            runs = [r for r in p if r.tag == tag_r]
+            if not runs:
+                continue
+            orig_text = ''
+            for r in runs:
+                t_elem = r.find(tag_t)
+                if t_elem is not None and t_elem.text:
+                    orig_text += t_elem.text
+            orig_text = orig_text.strip()
+            if not orig_text or not _is_meaningful_text(orig_text):
+                continue
+            translated = translate_text(orig_text, target_lang, delay, context)
+            if not translated or translated == orig_text:
+                continue
+            first_run = runs[0]
+            t_elem = first_run.find(tag_t)
+            if t_elem is None:
+                t_elem = ET.Element(tag_t)
+                first_run.append(t_elem)
+            t_elem.text = translated
+            for r in runs[1:]:
+                p.remove(r)
+            modified_count += 1
+        print(f"[DEBUG] 共修改了 {modified_count} 个段落")
+        tree.write(drawing_path, encoding='utf-8', xml_declaration=True, pretty_print=False)
+    except Exception as e:
+        print(f"[ERROR] 处理 drawing 文件出错 {drawing_path}: {e}")
+        import traceback
+        traceback.print_exc()
 
-def _kill_excel_by_pid(pid):
-    """根据PID强制结束Excel进程"""
-    if pid:
-        try:
-            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=False)
-            print(f"已结束Excel进程 PID={pid}")
-        except Exception as e:
-            print(f"结束进程失败: {e}")
+def _collect_si_tasks(xml_path):
+    tasks = []
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    for si in root.iter():
+        if si.tag.endswith('}si'):
+            # 收集所有直接子元素 <r>
+            runs = [child for child in si if child.tag.endswith('}r')]
+            if runs:
+                orig_text = ''.join(
+                    (r.find('./{*}t').text or '') if r.find('./{*}t') is not None else ''
+                    for r in runs
+                ).strip()
+                if orig_text and _is_meaningful_text(orig_text):
+                    tasks.append((si, runs, orig_text))
+            else:
+                # 没有 <r>，可能是直接 <t>
+                t_elem = si.find('./{*}t')
+                if t_elem is not None and t_elem.text and _is_meaningful_text(t_elem.text.strip()):
+                    tasks.append((si, [t_elem], t_elem.text.strip()))
+    return tasks, tree
 
-def _split_excel_to_temp_files(input_path, tmp_dir):
-    """
-    将Excel文件按工作表拆分为多个临时文件（每个工作表独立）。
-    返回：列表，每个元素为 (sheet_name, temp_file_path)
-    """
-    pythoncom.CoInitialize()
-    excel = None
-    try:
-        excel = win32.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        wb = excel.Workbooks.Open(input_path, ReadOnly=False, IgnoreReadOnlyRecommended=True, UpdateLinks=0)
-        sheets = []
-        for i, ws in enumerate(wb.Worksheets, 1):
-            sheet_name = ws.Name
-            # 复制当前工作表到新工作簿
-            ws.Copy()  # 复制后新工作簿成为活动工作簿
-            new_wb = excel.ActiveWorkbook
-            # 保存新工作簿到临时文件
-            temp_path = os.path.join(tmp_dir, f"sheet_{i:04d}_{sheet_name}.xlsx")
-            new_wb.SaveAs(temp_path, FileFormat=51)  # 51 = xlOpenXMLWorkbook
-            new_wb.Close(SaveChanges=False)
-            sheets.append((sheet_name, temp_path))
-        wb.Close(SaveChanges=False)
-        return sheets
-    finally:
-        if excel:
-            try:
-                excel.Quit()
-            except:
-                pass
-        pythoncom.CoUninitialize()
+def _translate_si_group(tasks_group, target_lang, delay, base_context, group_id):
+    ctx = {
+        "file_name": base_context["file_name"],
+        "slide_num": 0,
+        "total_slides": base_context["total_slides"],
+        "translated_segments": [],
+        "term_requirements": base_context["term_requirements"]
+    }
+    results = []
+    for si, elements, original in tasks_group:
+        translated = translate_text(original, target_lang, delay, context=ctx)
+        if not translated:
+            translated = original
+        results.append((si, elements, translated))
+        ctx["translated_segments"].append(f"原文：{original} | 译文：{translated}")
+        if len(ctx["translated_segments"]) > 5:
+            ctx["translated_segments"].pop(0)
+    return results
 
-def _translate_single_excel(temp_path, output_path, target_lang, delay):
-    """
-    翻译单个Excel临时文件（包含完整的一个工作表），使用独立的Excel实例。
-    返回翻译后的文件路径。
-    """
+def translate_excel_xml_based(input_path, output_path, target_lang, delay):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        with zipfile.ZipFile(input_path, 'r') as zf:
+            zf.extractall(tmp_path)
 
-    pythoncom.CoInitialize()
-    excel = None
-    pid = None
-    try:
-        # 创建独立Excel实例
-        excel = win32.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        pid = _get_excel_pid(excel)
-        
-        # 打开文件
-        wb = excel.Workbooks.Open(temp_path, ReadOnly=False, IgnoreReadOnlyRecommended=True, UpdateLinks=0)
-        sheet_count = wb.Worksheets.Count  # 应为1
-        
-        # 初始化上下文
-        excel_context = {
-            "file_name": os.path.basename(temp_path),
-            "slide_num": 1,
-            "total_slides": sheet_count,
+        base_context = {
+            "file_name": Path(input_path).name,
+            "slide_num": 0,
+            "total_slides": 0,
             "translated_segments": [],
             "term_requirements": "TBOX译为TBOX、TSU译为TSU、CAN总线译为CANバス（日语）/CAN Bus（英语），公司名称不翻译"
         }
-        
-        # 调用原有的全表翻译函数（已在你的代码中定义，可直接使用）
-        translate_excel_all_text(wb, sheet_count, target_lang, delay, excel_context)
-        
-        # 保存
-        wb.SaveAs(output_path, FileFormat=51)
-        wb.Close(SaveChanges=False)
-        
-        return output_path
-    finally:
-        if excel:
-            try:
-                excel.Quit()
-            except:
-                pass
-        if pid:
-            _kill_excel_by_pid(pid)
-        pythoncom.CoUninitialize()
 
-def _merge_excel_from_temp_files(original_path, sheets_info, output_path):
-    """
-    【终极神版】倒序合并 + 固定插最前面 | 100%稳定 零报错 顺序正确
-    """
+        xl_dir = tmp_path / "xl"
+        shared = xl_dir / "sharedStrings.xml"
 
-    pythoncom.CoInitialize()
-    excel = None
-    try:
-        excel = win32.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
+        if shared.exists():
+            print("[DEBUG] 开始处理 sharedStrings.xml...")
+            tasks, tree = _collect_si_tasks(shared)
+            if tasks:
+                total = len(tasks)
+                group_size = (total + MAX_WORKERS - 1) // MAX_WORKERS
+                groups = [tasks[i:i+group_size] for i in range(0, total, group_size)]
+                print(f"[DEBUG] 共 {total} 个字符串单元，分为 {len(groups)} 组并行翻译...")
+                group_results = [None] * len(groups)
+                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                    futures = {executor.submit(_translate_si_group, group, target_lang, delay, base_context, idx): idx
+                               for idx, group in enumerate(groups)}
+                    for future in as_completed(futures):
+                        idx = futures[future]
+                        try:
+                            group_results[idx] = future.result()
+                        except Exception as e:
+                            print(f"组 {idx+1} 翻译失败: {e}")
+                            group_results[idx] = []
+                # 写回
+                for grp_res in group_results:
+                    for si, elements, translated in grp_res:
+                        if elements and elements[0].tag.endswith('}r'):
+                            # 有 <r> 的情况
+                            first_run = elements[0]
+                            t_elem = first_run.find('./{*}t')
+                            if t_elem is None:
+                                t_elem = ET.Element(f"{{{first_run.nsmap.get('', '')}}}t")
+                                first_run.append(t_elem)
+                            t_elem.text = translated
+                            for r in elements[1:]:
+                                si.remove(r)
+                        elif elements and elements[0].tag.endswith('}t'):
+                            # 只有 <t> 的情况
+                            elements[0].text = translated
+                tree.write(shared, encoding='utf-8', xml_declaration=True, pretty_print=False)
+                print("[DEBUG] sharedStrings.xml 处理完成")
+            else:
+                print("[DEBUG] sharedStrings.xml 无可翻译的文本")
+        else:
+            print("[DEBUG] 未找到 sharedStrings.xml，单元格文本将不会被翻译")
 
-        # 1. 新建工作簿（保留默认Sheet1）
-        new_wb = excel.Workbooks.Add()
+        # 并行处理 drawing 和 chart
+        files_to_process = []
+        drawings_dir = xl_dir / "drawings"
+        if drawings_dir.exists():
+            files_to_process.extend(drawings_dir.glob("drawing*.xml"))
+        charts_dir = xl_dir / "charts"
+        if charts_dir.exists():
+            files_to_process.extend(charts_dir.glob("chart*.xml"))
 
-        # ==============================================
-        # 🔥 你的神思路：倒序遍历！从最后一个sheet开始合并
-        # ==============================================
-        for sheet_name, trans_temp_path in reversed(sheets_info):
-            print(f"合并工作表：{sheet_name}")
-            
-            # 打开临时翻译文件
-            wb_temp = excel.Workbooks.Open(trans_temp_path, ReadOnly=True)
-            source_sheet = wb_temp.Worksheets(1)
+        if files_to_process:
+            print(f"[DEBUG] 共找到 {len(files_to_process)} 个 drawing/chart 文件，开始并行处理...")
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                future_to_file = {}
+                for file_path in files_to_process:
+                    ctx = copy.deepcopy(base_context)
+                    future = executor.submit(_translate_drawing_file, file_path, target_lang, delay, ctx)
+                    future_to_file[future] = file_path
+                for future in as_completed(future_to_file):
+                    file_path = future_to_file[future]
+                    try:
+                        future.result()
+                        print(f"[DEBUG] 完成处理: {file_path.name}")
+                    except Exception as e:
+                        print(f"[ERROR] 处理文件 {file_path} 出错: {e}")
+        else:
+            print("[DEBUG] 未找到 drawings/charts 目录，形状/图表文本将不会被翻译")
 
-            # ==============================================
-            # ✅ 唯一稳定的写法：复制 → 移动到【最前面】
-            # ==============================================
-            source_sheet.Copy()
-            copied_sheet = excel.ActiveSheet
-            copied_sheet.Move(Before=new_wb.Sheets(1))  # 稳定不崩
+        # 重新打包
+        with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for file_path in tmp_path.rglob("*"):
+                if file_path.is_file():
+                    arcname = file_path.relative_to(tmp_path)
+                    zf.write(file_path, arcname)
 
-            # 关闭临时文件
-            wb_temp.Close(SaveChanges=False)
-
-        # 2. 删除默认Sheet1（安全删除）
-        new_wb.Worksheets("Sheet1").Delete()
-
-        # 3. 保存
-        new_wb.SaveAs(output_path, FileFormat=51)
-        new_wb.Close(SaveChanges=False)
-
-        print(f"✅ 合并完成！顺序/内容全正常")
-
-    finally:
-        if excel:
-            try:
-                excel.Quit()
-            except:
-                pass
-        pythoncom.CoUninitialize()
-
-def translate_excel_all_text(wb, sheet_count, target_lang, delay, excel_context):
-    """
-    完整翻译Excel工作表的所有文字元素（单元格+形状+批注+图表+页眉页脚）
-    """
-    # 遍历所有工作表（带序号）
-    for i, ws in enumerate(wb.Worksheets, 1):
-        excel_context["slide_num"] = i
-        excel_context["translated_segments"] = []  # 每个Sheet独立上下文
-        print(f"\n=== Excel 第 {i}/{sheet_count} 个工作表: {ws.Name} ===")
-
-        # ========== 1. 翻译单元格（优化UsedRange，遍历所有有内容的单元格） ==========
-        try:
-            # 刷新UsedRange，避免漏选
-            ws.UsedRange
-            # 遍历所有单元格（替代仅UsedRange，可根据需求调整为UsedRange提升效率）
-            # 方式1：高效版（仅UsedRange）
-            for cell in ws.UsedRange:
-                val = cell.Value
-                if val and isinstance(val, str):
-                    val_stripped = val.strip()
-                    # if re.search(r"[\u4e00-\u9fff]", val_stripped):
-                    cell.Value = translate_text(val_stripped, target_lang, delay, context=excel_context)
-        
-        except Exception as e:
-            print(f"翻译单元格失败: {e}")
-
-        # ========== 2. 翻译所有形状文字（含分组/TextFrame2） ==========
-        def translate_shape_text(shp):
-            """递归翻译形状（含分组形状）的文字"""
-            try:
-                # 处理分组形状：递归遍历子形状
-                if shp.Type == 6:  # 6=xlGroup：分组形状
-                    for sub_shp in shp.GroupItems:
-                        translate_shape_text(sub_shp)
-                    return
-                
-                # 处理SmartArt图形
-                if shp.Type == 19:  # 19=xlSmartArt：SmartArt图形
-                    for node in shp.SmartArt.AllNodes:
-                        if node.TextFrame2.TextRange.Text:
-                            t = node.TextFrame2.TextRange.Text.strip()
-                            # if re.search(r"[\u4e00-\u9fff]", t):
-                            node.TextFrame2.TextRange.Text = translate_text(t, target_lang, delay, context=excel_context)
-                    return
-
-                # 优先用TextFrame2（Office 2007+），兼容TextFrame
-                if hasattr(shp, "TextFrame2") and shp.TextFrame2.HasText:
-                    t = shp.TextFrame2.TextRange.Text.strip()
-                    # if re.search(r"[\u4e00-\u9fff]", t):
-                    shp.TextFrame2.TextRange.Text = translate_text(t, target_lang, delay, context=excel_context)
-                elif hasattr(shp, "TextFrame") and shp.TextFrame.Characters.Text:
-                    t = shp.TextFrame.Characters.Text.strip()
-                    # if re.search(r"[\u4e00-\u9fff]", t):
-                    shp.TextFrame.Characters().Text = translate_text(t, target_lang, delay, context=excel_context)
-            except Exception as e:
-                print(f"翻译形状[{shp.Name}]失败: {e}")
-
-        # 遍历所有形状（含分组）
-        for shp in ws.Shapes:
-            translate_shape_text(shp)
-
-        # ========== 3. 翻译单元格批注/备注 ==========
-        try:
-            # Excel 2016+用ws.Comments，旧版用ws.Notes
-            for comment in ws.Comments:
-                t = comment.Text().strip()
-                if re.search(r"[\u4e00-\u9fff]", t):
-                    comment.Text(translate_text(t, target_lang, delay, context=excel_context))
-        except Exception as e:
-            print(f"翻译批注失败: {e}")
-
-        # ========== 4. 翻译图表中的文字 ==========
-        try:
-            for chart in ws.ChartObjects:
-                # 翻译图表标题
-                if chart.Chart.HasTitle:
-                    t = chart.Chart.ChartTitle.Text.strip()
-                    # if re.search(r"[\u4e00-\u9fff]", t):
-                    chart.Chart.ChartTitle.Text = translate_text(t, target_lang, delay, context=excel_context)
-                # 翻译坐标轴标签（X/Y轴）
-                for axis in chart.Chart.Axes:
-                    if axis.HasTitle:
-                        t = axis.AxisTitle.Text.strip()
-                        # if re.search(r"[\u4e00-\u9fff]", t):
-                        axis.AxisTitle.Text = translate_text(t, target_lang, delay, context=excel_context)
-                # 翻译数据标签（可选）
-                # for series in chart.Chart.SeriesCollection():
-                #     if series.HasDataLabels:
-                #         for label in series.DataLabels:
-                #             t = label.Text.strip()
-                #             if re.search(r"[\u4e00-\u9fff]", t):
-                #                 label.Text = translate_text(t, target_lang, delay, context=excel_context)
-        except Exception as e:
-            print(f"翻译图表文字失败: {e}")
-
-        # ========== 5. 翻译页眉/页脚文字 ==========
-        try:
-            # 翻译页眉（左/中/右）
-            for align in ["LeftHeader", "CenterHeader", "RightHeader"]:
-                t = getattr(ws.PageSetup, align).strip()
-                # if re.search(r"[\u4e00-\u9fff]", t):
-                setattr(ws.PageSetup, align, translate_text(t, target_lang, delay, context=excel_context))
-            # 翻译页脚（左/中/右）
-            for align in ["LeftFooter", "CenterFooter", "RightFooter"]:
-                t = getattr(ws.PageSetup, align).strip()
-                # if re.search(r"[\u4e00-\u9fff]", t):
-                setattr(ws.PageSetup, align, translate_text(t, target_lang, delay, context=excel_context))
-        except Exception as e:
-            print(f"翻译页眉页脚失败: {e}")
-
-def translate_excel_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, output_dir: str = DEFAULT_OUTPUT_DIR,
-                         target_lang: str = DEFAULT_TARGET_LANG, delay: float = DEFAULT_DELAY) -> str:
-    """
-    翻译Excel文件（并行版）：按工作表拆分为临时文件，多线程并行翻译，最后合并。
-    支持保留所有格式、图形、图表等。
-    """
-    
-    input_path = os.path.abspath(os.path.join(source_dir, file_name)).replace("/", "\\")
-    output_path = os.path.abspath(os.path.join(output_dir, f"{os.path.splitext(file_name)[0]}_{target_lang}{os.path.splitext(file_name)[1]}")).replace("/", "\\")
-    
-    if not os.path.exists(input_path):
+def translate_excel_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR,
+                         output_dir: str = DEFAULT_OUTPUT_DIR,
+                         target_lang: str = DEFAULT_TARGET_LANG,
+                         delay: float = DEFAULT_DELAY) -> str:
+    input_path = Path(source_dir) / file_name
+    if not input_path.exists():
         raise ToolException(f"Excel文件不存在: {input_path}")
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    # 1. 拆分为临时文件
-    tmp_dir = tempfile.mkdtemp(prefix="excel_split_")
-    try:
-        sheets_info = _split_excel_to_temp_files(input_path, tmp_dir)
-        if not sheets_info:
-            raise ToolException("没有找到工作表")
-        
-        # 2. 并行翻译所有临时文件
-        translated_temp_files = []
+    output_path = Path(output_dir) / f"{input_path.stem}_{target_lang}{input_path.suffix}"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    translate_excel_xml_based(str(input_path), str(output_path), target_lang, delay)
 
-        with ThreadPoolExecutor(max_workers=6) as executor:
-            futures = []
-            for sheet_name, temp_path in sheets_info:
-                trans_temp = os.path.join(tmp_dir, f"trans_{os.path.basename(temp_path)}")
-                future = executor.submit(_translate_single_excel, temp_path, trans_temp, target_lang, delay)
-                futures.append((future, sheet_name, trans_temp))
-            
-            for future, sheet_name, trans_temp in futures:
-                # future.result()  # 去掉try块，直接执行，出错会抛出异常
-                future.result()
-                translated_temp_files.append((sheet_name, trans_temp))
-        
-        # 3. 合并回最终文件
-        # 注意：translated_temp_files 顺序应与 sheets_info 一致（我们已经保持了顺序）
-        _merge_excel_from_temp_files(input_path, translated_temp_files, output_path)
-        
-        # 4. 清理
-        # _translation_cache.clear()
-        gc.collect()
-        return f"Excel翻译完成！输出路径: {output_path}"
-    
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    
+    gc.collect()
+    return f"Excel翻译完成！输出路径: {output_path}"

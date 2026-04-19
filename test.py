@@ -124,8 +124,8 @@ def write_file(file_path: str, content: str) -> str:
     # 安全限制：只允许写入当前目录或指定安全目录
     safe_dir = os.getcwd()
     abs_path = os.path.abspath(file_path)
-    if not abs_path.startswith(safe_dir):
-        return f"拒绝写入 {abs_path}：不在允许的目录 {safe_dir} 下"
+    # if not abs_path.startswith(safe_dir):
+    #     return f"拒绝写入 {abs_path}：不在允许的目录 {safe_dir} 下"
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
@@ -187,9 +187,9 @@ agent = create_agent(
 
 # ===================== 测试 =====================
 if __name__ == "__main__":
-    config = {"configurable": {"thread_id": str(uuid7())},"recursion_limit": 20}  # 限制最大循环步数，防止无限调用工具
+    config = {"configurable": {"thread_id": str(uuid7())},"recursion_limit": 50}  # 限制最大循环步数，防止无限调用工具
     result = agent.invoke({
-        "messages": [{"role": "user", "content": "根据skills/pptx/ref/目录下的参考资料和skills/pptx/tmp/目录下的模板文件，帮我生成一份问题报告的PPT。要中文版的报告，内容要翔实，结构要清晰。"}]
+        "messages": [{"role": "user", "content": "根据ref/文件夹下的参考资料和tmp/文件夹下的模板文件，帮我生成一份问题报告的PPT。要中文版的报告，内容要翔实，结构要清晰。"}]
     }, config)
     for msg in result["messages"]:
         msg.pretty_print()
