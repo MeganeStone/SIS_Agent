@@ -15,7 +15,7 @@ import sys
 import subprocess
 import base64
 
-BASE_SKILL_PATH = r"D:\seki\AI\Langchain\SIS_Agent\skills"
+BASE_SKILL_PATH = r"D:\AI\SIS agent\skills"
 # ===================== 1. 动态加载本地 Skills =====================
 SKILLS_FOLDER = "skills"
 class Skill(TypedDict):
@@ -53,15 +53,14 @@ def load_skill(skill_name: str) -> str:
         if skill["name"] == skill_name:
             target_dir = os.path.join(BASE_SKILL_PATH, skill_name)
             os.chdir(target_dir)
-            return f"（当前工作目录已切换到 {target_dir}）,\n\n✅ 已加载技能：{skill_name}\n\n{skill['content']}"
+            return f"（✅ 已加载技能：{skill_name}\n\n{skill['content']}"
     return f"❌ 未找到技能，可用：{', '.join(s['name'] for s in SKILLS)}"
 
-@tool
+# @tool
 def execute_shell(command: str) -> str:
     """
-    执行 PowerShell 命令（不再支持 CMD），禁止执行Linux命令。
+    执行 Linux 命令。
     如需执行多行python代码，必须先调用write_file工具将代码写进临时文件，再执行文件。
-    当前执行目录固定为 SKILL 目录：D:\\seki\\AI\\Langchain\\SIS_Agent\\skills\\pptx，相对于项目根目录的地址为 skills\\pptx。
     返回 stdout 和 stderr，完整输出所有信息。
     """
     # 危险模式过滤
@@ -75,29 +74,24 @@ def execute_shell(command: str) -> str:
     if command.strip().startswith("python"):
         command = command.replace("python", f'"{sys.executable}"', 1)
 
-    # 将命令转为 PowerShell 可接受的 Base64 编码（UTF-16LE）
-    # 这样可以避免引号、换行、特殊字符的转义问题
     try:
-        encoded = base64.b64encode(command.encode('utf-16le')).decode('ascii')
-    except Exception as e:
-        return f"[编码失败] {str(e)}"
-
-    try:
-        # 调用 powershell.exe，使用 -EncodedCommand
         result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            # Windows + WSL 下执行 Linux 命令
+            ["wsl", "bash", "-c", command],
             capture_output=True,
             text=True,
             timeout=30,
-            cwd=r"D:\seki\AI\Langchain\SIS_Agent\skills\pptx"
+            encoding='utf-8', 
+            # 关键：Windows路径 D:\xxx 会自动被 WSL 识别为 /mnt/d/xxx
+            cwd=os.getcwd()
         )
-
+        print(f"命令执行完成，返回码: {result}")  # 调试用，实际部署时可以注释掉
         output = ""
         if result.stdout:
             output += f"[标准输出]\n{result.stdout}\n"
         if result.stderr:
             output += f"[错误输出]\n{result.stderr}\n"
-
+        print(f"执行命令: {command}\n{output}")  # 调试用，实际部署时可以注释掉
         return output.strip() if output else "[命令执行完成，无任何输出]"
 
     except subprocess.TimeoutExpired:
@@ -152,7 +146,7 @@ class SkillMiddleware(AgentMiddleware):
 # 系统规则（严格遵守）
 1. 先使用 load_skill 加载对应技能说明书
 2. 严格按照说明书步骤执行
-3. execute_shell工具的执行器是powershell，执行的命令必须符合powershell规范，严禁执行cmd和Linux命令。
+3. execute_shell工具只能执行Linux命令，命令必须符合Linux命令规范。
 4. 用 execute_shell 运行 ooxml/scripts/ 下的 Python 脚本
 5. 用 read_file / write_file 管理 JSON 配置文件
 6. 如需执行单行python代码，直接使用execute_shell工具执行。
@@ -186,7 +180,6 @@ agent = create_agent(
     你的任务是根据这些文件，以及放在skills/pptx/tmp/目录下的以前报告过的模板文件（如有），自动生成一份结构清晰、内容翔实的PPT报告，我们会将报告提交给客户。
     但是以前报告过的模板文件仅供参考PPT格式、报告风格等，生成的报告的页数、内容等应该主要参照skills/pptx/ref/下的参考文档，无需和模板文件一模一样。
     注意：如果任务是生成新的bug报告，你需要阅读skills/pptx/ref/目录下的所有文件，不要遗漏。
-    你必须严格遵守以下工具使用规则：
     """,
     middleware=[SkillMiddleware()],
     checkpointer=InMemorySaver(),
@@ -194,9 +187,13 @@ agent = create_agent(
 
 # ===================== 测试 =====================
 if __name__ == "__main__":
-    config = {"configurable": {"thread_id": str(uuid7())}}
+    config = {"configurable": {"thread_id": str(uuid7())},"recursion_limit": 20}  # 限制最大循环步数，防止无限调用工具
     result = agent.invoke({
         "messages": [{"role": "user", "content": "根据skills/pptx/ref/目录下的参考资料和skills/pptx/tmp/目录下的模板文件，帮我生成一份问题报告的PPT。要中文版的报告，内容要翔实，结构要清晰。"}]
     }, config)
     for msg in result["messages"]:
         msg.pretty_print()
+    # param_str = {'command': 'cd D:\\\\AI\\\\SIS agent\\\\skills\\\\pptx && dir ref'}
+    # actual_command = param_str['command']
+    # response = execute_shell(actual_command)
+    # print(f"响应: {response}")
