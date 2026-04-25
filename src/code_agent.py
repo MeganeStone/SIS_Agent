@@ -8,6 +8,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.types import Command
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.messages import AIMessage, ToolMessage
+import platform
 
 # 复用主程序中的 LLM 配置（建议从环境变量读取）
 DASHSCOPE_API_KEY = "sk-10579025107e412983a48273c2ff7d3f"  # 或者从主程序传入
@@ -40,10 +41,17 @@ def execute_shell(command: str) -> str:
     if command.strip().startswith("python"):
         command = command.replace("python", f'"{sys.executable}"', 1)
 
+    if platform.system() == "Windows":
+        # Windows 下继续用 wsl（如果你需要 Linux 命令）
+        shell_cmd = ["wsl", "bash", "-c", command]
+    else:
+        # Linux / macOS 直接运行 bash
+        shell_cmd = ["bash", "-c", command]
+
     try:
         result = subprocess.run(
             # Windows + WSL 下执行 Linux 命令
-            ["wsl", "bash", "-c", command],
+            shell_cmd,
             capture_output=True,
             text=True,
             timeout=30,

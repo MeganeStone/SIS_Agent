@@ -71,29 +71,3 @@ class DashScopeRerank(BaseDocumentCompressor):
         except Exception as e:
             print(f"Rerank 调用失败: {e}")
             return documents[:self.top_n]
-
-    # 可选：添加一个简单的测试方法
-    def test_connection(self):
-        """测试API连接是否正常"""
-        test_docs = [Document(page_content="这是一个测试文档")]
-        try:
-            result = self.compress_documents(test_docs, "测试")
-            return True
-        except:
-            return False
-        
-if __name__ == "__main__":
-    api_key = "sk-10579025107e412983a48273c2ff7d3f"
-    reranker = DashScopeRerank(api_key=api_key, top_n=2)
-
-    docs = [
-        Document(page_content="文本排序模型广泛用于搜索引擎和推荐系统中"),
-        Document(page_content="量子计算是计算科学的一个前沿领域"),
-        Document(page_content="预训练语言模型的发展给文本排序模型带来了新的进展")
-    ]
-    query = "什么是文本排序模型"
-
-    result = reranker.compress_documents(docs, query)
-    print("重排序后的文档：")
-    for i, doc in enumerate(result):
-        print(f"{i+1}. {doc.page_content}")
