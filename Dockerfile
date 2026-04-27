@@ -2,10 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources \
+    && sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
+
 # 安装系统依赖（unstructured 需要）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
     && rm -rf /var/lib/apt/lists/*
+
+# 使用阿里云镜像源加速
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
 
 # 复制依赖文件1
 COPY requirements.txt .
