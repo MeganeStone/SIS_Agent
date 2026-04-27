@@ -21,15 +21,25 @@ import os
 import time
 import gc
 from datetime import datetime
+from dotenv import load_dotenv
+load_dotenv()
+from pathlib import Path
+
+# 获取当前脚本所在目录的父级目录（即 SIS_Agent 根目录）
+SIS_AGENT_ROOT = Path(__file__).parent.parent
 
 from synonyms import enhance_doc_synonyms  # 导入同义词增强函数
 # ====================== 全局配置（新手只需改这里） ======================
 # 1. 本地文档文件夹（存放所有TBOX文档，支持PDF/TXT）
-TBOX_DOCS_DIR = "../tbox_docs"  # 可改成你的实际路径，如"D:/seki/AI/TBOX文档"
+TBOX_DOCS_DIR = os.getenv("TBOX_DOCS_DIR") or str(SIS_AGENT_ROOT / "tbox_docs")  # 可改成你的实际路径，如"D:/seki/AI/TBOX文档"
+PARENT_STORE_DIR = os.getenv("PARENT_STORE_DIR") or str(SIS_AGENT_ROOT / "parent_store")  # 父文档存储路径
 # 2. 向量库保存路径
-PERSIST_DIR = "../tbox_vector_db"
+VECTOR_DB_DIR = os.getenv("VECTOR_DB_DIR") or str(SIS_AGENT_ROOT / "tbox_vector_db")
 # 3. embedding模型API Key（请替换成自己的）
-DASHSCOPE_API_KEY = "sk-10579025107e412983a48273c2ff7d3f"
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL") or "text-embedding-v4"  # 可替换成你想用的模型，如 "text-embedding-v4"
+IMAGE_CAPTION_API_KEY = os.getenv("IMAGE_CAPTION_API_KEY")
+IMAGE_CAPTION_LLM_MODEL = os.getenv("IMAGE_CAPTION_LLM_MODEL") or "qwen3.5-flash"  # 可替换成你想用的模型，如 "qwen3.5-flash"
 # 定义“单例”向量库实例（初始为None）
 _global_vector_db = None
 
@@ -40,8 +50,8 @@ def _get_path_hash(file_path: str) -> str:
 # 嵌入模型配置（阿里云百炼）
 def load_embedding_model():
     return DashScopeEmbeddings(
-        model="text-embedding-v4",
-        dashscope_api_key=DASHSCOPE_API_KEY
+        model=EMBEDDING_MODEL,
+        dashscope_api_key=EMBEDDING_API_KEY
     )
 
 def create_parent_child_docs(file_path):
@@ -72,7 +82,7 @@ def create_parent_child_docs(file_path):
 
     return child_docs, parent_docs
 
-def get_all_parent_docs(store_dir: str = "../parent_store"):
+def get_all_parent_docs(store_dir: str = PARENT_STORE_DIR):
     """从本地存储中加载所有父文档，返回 Document 列表"""
     store = LocalFileStore(store_dir)
     parent_docs = []
@@ -273,8 +283,8 @@ def load_vision_model():
         ]
         # 调用通义千问VL模型
         response = MultiModalConversation.call(
-            api_key=DASHSCOPE_API_KEY,
-            model="qwen3.5-flash",  # 免费高速模型
+            api_key=IMAGE_CAPTION_API_KEY,
+            model=IMAGE_CAPTION_LLM_MODEL,  # 免费高速模型
             messages=messages
         )
         return response.output.choices[0].message.content[0]["text"]
@@ -350,7 +360,7 @@ def diff_update_vector_db():
     
     # 1. 获取本地文件信息和向量库
     local_docs = get_local_docs_info()
-    vector_db = Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
+    vector_db = Chroma(collection_name="all_child_docs", persist_directory=VECTOR_DB_DIR, embedding_function=EMBEDDINGS)
     # 获取向量库中的文件信息
     db_docs = vector_db.get()
     db_file_info = {}
@@ -362,7 +372,7 @@ def diff_update_vector_db():
                 db_file_info[file_name] = file_mtime
 
     # 初始化 docstore（父块存储）
-    parent_store_dir = "../parent_store"
+    parent_store_dir = PARENT_STORE_DIR
     store = LocalFileStore(parent_store_dir)
     
     # 3. 第一步：删除向量库中已不存在的文件
@@ -455,10 +465,10 @@ def init_or_load_vector_db():
     """初始化/加载向量库（首次全量，后续差分）"""
     try:
         # 确保 docstore 目录存在
-        parent_store_dir = "../parent_store"
+        parent_store_dir = PARENT_STORE_DIR
         os.makedirs(parent_store_dir, exist_ok=True)
         store = LocalFileStore(parent_store_dir)
-        if not os.path.exists(PERSIST_DIR) or len(os.listdir(PERSIST_DIR)) == 0:
+        if not os.path.exists(VECTOR_DB_DIR) or len(os.listdir(VECTOR_DB_DIR)) == 0:
             print("📦 首次使用，全量构建向量库...")
             local_docs = get_local_docs_info()
             all_child_docs = []
@@ -475,7 +485,7 @@ def init_or_load_vector_db():
                 vector_db = Chroma(
                     collection_name="all_child_docs",
                     embedding_function=EMBEDDINGS,
-                    persist_directory=PERSIST_DIR
+                    persist_directory=VECTOR_DB_DIR
                 )
                 # ========== 补充关键步骤：将子块添加到向量库 ==========
                 vector_db.add_documents(all_child_docs)
@@ -491,16 +501,16 @@ def init_or_load_vector_db():
                     store.mset(list(parent_dict.items()))
                 print(f"✅ 首次全量构建完成：子块{len(all_child_docs)}个，父块{len(all_parent_docs)}个")
             else:
-                vector_db = Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
+                vector_db = Chroma(collection_name="all_child_docs", persist_directory=VECTOR_DB_DIR, embedding_function=EMBEDDINGS)
                 print("⚠️ 本地文档文件夹为空，向量库为空")
         else:
-            vector_db = Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
-            print(f"✅ 加载已有向量库：{PERSIST_DIR}")
+            vector_db = Chroma(collection_name="all_child_docs", persist_directory=VECTOR_DB_DIR, embedding_function=EMBEDDINGS)
+            print(f"✅ 加载已有向量库：{VECTOR_DB_DIR}")
         return vector_db
     except Exception as e:
         print(f"向量库初始化失败：{str(e)}")
         # 返回空向量库，避免程序崩溃
-        return Chroma(collection_name="all_child_docs", persist_directory=PERSIST_DIR, embedding_function=EMBEDDINGS)
+        return Chroma(collection_name="all_child_docs", persist_directory=VECTOR_DB_DIR, embedding_function=EMBEDDINGS)
 
 
 def get_vector_db():

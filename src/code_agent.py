@@ -7,17 +7,19 @@ from langchain.tools import tool, ToolRuntime
 from langchain_openai import ChatOpenAI
 from langgraph.types import Command
 from langgraph.checkpoint.memory import InMemorySaver
-from langchain_core.messages import AIMessage, ToolMessage
 import platform
-
+from dotenv import load_dotenv
+load_dotenv()
 # 复用主程序中的 LLM 配置（建议从环境变量读取）
-DASHSCOPE_API_KEY = "sk-10579025107e412983a48273c2ff7d3f"  # 或者从主程序传入
+CODE_AGENT_API_KEY = os.getenv("CODE_AGENT_API_KEY")  # 或者从主程序传入
+url = os.getenv("CODE_AGENT_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+model = os.getenv("CODE_AGENT_LLM_MODEL") or "qwen3.5-plus"
 
 LLM = ChatOpenAI(
-    model="qwen3.5-plus",
+    model=model,
     temperature=0.1,
-    api_key=DASHSCOPE_API_KEY,
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    api_key=CODE_AGENT_API_KEY,
+    base_url=url,
     extra_body={"enable_search": True},
     stream_options={"include_usage": True},
 )

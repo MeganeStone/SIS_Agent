@@ -1,8 +1,7 @@
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.types import Command
-from langchain.tools import ToolRuntime
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal
+from typing_extensions import NotRequired
 from langchain_core.messages import AIMessage, ToolMessage, HumanMessage
 from langchain.agents import AgentState
 from code_agent import create_code_agent
@@ -22,6 +21,7 @@ def build_top_graph():
     # 2. 包装节点函数
     def call_main_agent(state: MultiAgentState):
         nonlocal main_context
+        config = {"configurable": {"thread_id": "2"}}  # 传递代码Agent节点名称，供主Agent调用
         # 只取最新的用户消息作为本轮输入
         last_human = None
         for msg in reversed(state.get("messages", [])):

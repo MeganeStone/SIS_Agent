@@ -6,14 +6,10 @@ TBOX智能助手Agent
 """
 import warnings
 
-warnings.filterwarnings("ignore")  # 屏蔽新手无关的警告
-
-# 2. 大模型配置（请替换为自己的API Key）
-DASHSCOPE_API_KEY = "sk-10579025107e412983a48273c2ff7d3f"  # 替换成自己的！
+warnings.filterwarnings("ignore")  # 屏f蔽新手无关的警告
 
 # 1. 导入LangChain核心模块
 import streamlit as st
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, AIMessageChunk, ToolMessage
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
@@ -23,15 +19,21 @@ from langgraph.types import Command
 
 # 注意：如果你的tools/rag_new/vector_db_new文件路径不对，需自行调整
 from tools import translate_file_tool, create_rag_qa_tool, web_search  # 导入翻译工具和RAG工具
-from rag_new import build_qa_chain  # 导入RAG问答链函数
-from vector_db_new import get_vector_db  # 导入文档目录配置
+from rag import build_qa_chain  # 导入RAG问答链函数
+from vector_db import get_vector_db  # 导入文档目录配置
+from dotenv import load_dotenv
+load_dotenv()
+import os
 
+MAIN_AGENT_API_KEY = os.getenv("MAIN_AGENT_API_KEY")  # 替换成自己的！
+MAIN_AGENT_BASE_URL = os.getenv("MAIN_AGENT_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"  # 替换成自己的！
+MAIN_AGENT_LLM_MODEL = os.getenv("MAIN_AGENT_LLM_MODEL") or "qwen3.5-plus" 
 # ====================== 第一步：基础配置（大模型/嵌入/文本分割） ======================
 LLM = ChatOpenAI(
-    model="qwen3.5-plus",
+    model=MAIN_AGENT_LLM_MODEL,
     temperature=0.1,
-    api_key=DASHSCOPE_API_KEY,
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    api_key=MAIN_AGENT_API_KEY,
+    base_url=MAIN_AGENT_BASE_URL,
     timeout=300,
     extra_body={"enable_search": True},
     stream_options={"include_usage": True},

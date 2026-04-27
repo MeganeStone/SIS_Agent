@@ -4,12 +4,18 @@ from langchain_core.tools import ToolException
 from translate_ppt import translate_ppt_file
 from translate_excel import translate_excel_file
 from translate_word import translate_word_file
+from dotenv import load_dotenv
+load_dotenv()
+from pathlib import Path
+
+# 获取当前脚本所在目录的父级目录（即 SIS_Agent 根目录）
+SIS_AGENT_ROOT = Path(__file__).parent.parent
 
 # ---------------------- 全局配置（你的默认目录） ----------------------
-DEFAULT_INPUT_DIR = r"D:\seki\AI\copilotTest\input"
-DEFAULT_OUTPUT_DIR = r"D:\seki\AI\copilotTest\output"
-DEFAULT_TARGET_LANG = "日语"  # 默认翻译目标语言
-DEFAULT_DELAY = 1.2  # 每次翻译后的延迟，单位秒（可调整，过快可能触发API限速）
+DEFAULT_INPUT_DIR = os.getenv("TRANSLATE_INPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "input")
+DEFAULT_OUTPUT_DIR = os.getenv("TRANSLATE_OUTPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "output")
+DEFAULT_TARGET_LANG = os.getenv("TRANSLATE_TARGET_LANG") or "日语"  # 默认翻译目标语言
+DEFAULT_DELAY = float(os.getenv("TRANSLATE_DELAY") or 1.2)  # 每次翻译后的延迟，单位秒（可调整，过快可能触发API限速）
 
 def translate_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, output_dir: str = DEFAULT_OUTPUT_DIR, target_lang: str = DEFAULT_TARGET_LANG, delay: float = DEFAULT_DELAY):
     """通用文件翻译接口，根据文件后缀自动调用对应的翻译函数"""

@@ -13,12 +13,15 @@ from langgraph.errors import GraphRecursionError
 from langsmith import traceable
 import asyncio
 import nest_asyncio
+import os
 
-from rag_new import build_qa_chain  # 导入RAG问答链函数
-from vector_db_new import TBOX_DOCS_DIR, diff_update_vector_db, get_local_docs_info  # 导入文档目录配置
+from rag import build_qa_chain  # 导入RAG问答链函数
+from vector_db import TBOX_DOCS_DIR, diff_update_vector_db, get_local_docs_info  # 导入文档目录配置
 from multi_agent import build_top_graph  # 导入创建Agent的函数
 
 # 应用 nest_asyncio 以允许在已有事件循环中运行新的 asyncio.run()
+# 强制使用原生 asyncio 事件循环，避免 uvloop
+asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 nest_asyncio.apply()
 
 st.set_page_config(
@@ -97,9 +100,9 @@ def main():
             # 定义一个异步函数来处理 astream_events
             async def process_with_events():
                 # ----- 预算控制变量 -----
-                MAX_TURNS = 20                 # 最大循环轮数（LLM 调用次数）
-                MAX_BUDGET_TOKENS = 800000     # 最大总 token 预算
-                
+                MAX_TURNS = int(os.getenv("MAX_TURNS") or 50)  # 最大循环轮数（LLM 调用次数）
+                MAX_BUDGET_TOKENS = int(os.getenv("MAX_BUDGET_TOKENS") or 800000)  # 最大总 token 预算
+
                 total_input_tokens = 0
                 total_output_tokens = 0
                 total_all_tokens = 0

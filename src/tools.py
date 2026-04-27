@@ -2,10 +2,6 @@ import warnings
 
 warnings.filterwarnings("ignore")  # 屏蔽新手无关的警告
 
-# ====================== 全局配置（新手只需改这里） ======================
-# 4. 大模型配置（请替换为自己的API Key）
-DASHSCOPE_API_KEY = "sk-10579025107e412983a48273c2ff7d3f"  # 替换成自己的！
-
 # 1. 导入LangChain核心模块
 from typing import Optional, List
 from pydantic import BaseModel, Field
@@ -14,6 +10,9 @@ from langchain.tools import tool
 
 import requests
 import json
+from dotenv import load_dotenv
+load_dotenv()
+import os
 
 # 在tbox_doc_agent.py的顶部导入自定义翻译模块
 from tbox_custom_translator import (
@@ -38,10 +37,10 @@ def web_search(query: str) -> str:
     """
     
     # 从环境变量获取 API Key（强烈推荐，不要硬编码）
-    api_key = "eplh4Tnp86GM50B7qf1YNbNhs65GjeA8"  # 替换成自己的API Key，或使用 os.getenv("VOLC_API_KEY") 从环境变量获取
+    api_key = os.getenv("VOLC_API_KEY")  # 替换成自己的API Key，或使用 os.getenv("VOLC_API_KEY") 从环境变量获取
     
     # 火山引擎联网搜索 API 地址
-    url = "https://open.feedcoopapi.com/search_api/web_search"
+    url = os.getenv("VOLC_SEARCH_API_URL") or "https://open.feedcoopapi.com/search_api/web_search"  # 替换成火山引擎提供的搜索API地址，或使用环境变量配置
     
     # 请求头
     headers = {
@@ -146,7 +145,7 @@ def create_rag_qa_tool(qa_chain):
     """创建RAG问答工具（依赖注入：qa_chain由外部传入）"""
     # 包装函数：适配工具的参数格式，内部调用rag_qa_chain
     def rag_qa_tool_wrapper(question: str) -> str:
-        from rag_new import rag_qa_chain
+        from rag import rag_qa_chain
         return rag_qa_chain(question, qa_chain)
     
     # 封装工具

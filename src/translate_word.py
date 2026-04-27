@@ -6,13 +6,19 @@ from docx import Document
 from docx.oxml.ns import qn
 from langchain_core.tools import ToolException
 from translate_text import translate_text, _translation_cache
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv()
+
+# 获取当前脚本所在目录的父级目录（即 SIS_Agent 根目录）
+SIS_AGENT_ROOT = Path(__file__).parent.parent
 
 # ---------------------- 全局配置 ----------------------
-DEFAULT_INPUT_DIR = r"D:\seki\AI\copilotTest\input"
-DEFAULT_OUTPUT_DIR = r"D:\seki\AI\copilotTest\output"
-DEFAULT_TARGET_LANG = "日语"
-DEFAULT_DELAY = 1.2
-MAX_WORKERS = 6
+DEFAULT_INPUT_DIR = os.getenv("TRANSLATE_INPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "input")
+DEFAULT_OUTPUT_DIR = os.getenv("TRANSLATE_OUTPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "output")
+DEFAULT_TARGET_LANG = os.getenv("TRANSLATE_TARGET_LANG") or "日语"
+DEFAULT_DELAY = os.getenv("TRANSLATE_DELAY") or 1.2
+MAX_WORKERS = os.getenv("MAX_WORKERS") or 6
 
 
 def _paragraph_has_picture(paragraph):

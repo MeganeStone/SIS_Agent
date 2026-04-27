@@ -1,6 +1,5 @@
 import os
-import gc
-from tkinter import font    
+import gc 
 from pptx import Presentation
 from pptx.enum.text import MSO_AUTO_SIZE
 from pptx.util import Pt
@@ -8,12 +7,20 @@ from pptx.util import Pt
 from langchain_core.tools import ToolException
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from translate_text import translate_text, _translation_cache
+from dotenv import load_dotenv
+load_dotenv()
+import os
+from pathlib import Path
+
+# 获取当前脚本所在目录的父级目录（即 SIS_Agent 根目录）
+SIS_AGENT_ROOT = Path(__file__).parent.parent
 
 # ---------------------- 全局配置（你的默认目录） ----------------------
-DEFAULT_INPUT_DIR = r"D:\seki\AI\copilotTest\input"
-DEFAULT_OUTPUT_DIR = r"D:\seki\AI\copilotTest\output"
-DEFAULT_TARGET_LANG = "日语"  # 默认翻译目标语言
-DEFAULT_DELAY = 1.2  # 每次翻译后的延迟，单位秒（可调整，过快可能触发API限速）
+DEFAULT_INPUT_DIR = os.getenv("TRANSLATE_INPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "input")
+DEFAULT_OUTPUT_DIR = os.getenv("TRANSLATE_OUTPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "output")
+DEFAULT_TARGET_LANG = os.getenv("TRANSLATE_TARGET_LANG") or "日语"
+DEFAULT_DELAY = float(os.getenv("TRANSLATE_DELAY") or 1.2)
+MAX_WORKERS = int(os.getenv("MAX_WORKERS") or 6)
 
 def translate_ppt_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, output_dir: str = DEFAULT_OUTPUT_DIR, 
                        target_lang: str = DEFAULT_TARGET_LANG, delay: float = DEFAULT_DELAY) -> str:
@@ -99,7 +106,7 @@ def translate_ppt_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, outp
         return True
     
     # 并行处理每个幻灯片
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = []
         for slide, shapes, ctx in slides_data:
             future = executor.submit(process_slide, slide, shapes, ctx, target_lang, delay, jp_font)

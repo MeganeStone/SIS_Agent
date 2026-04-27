@@ -5,11 +5,17 @@ from openai import OpenAI
 from openai import APIError, RateLimitError, APITimeoutError, APIConnectionError
 # 新增：导入httpx处理客户端配置
 import httpx
+from dotenv import load_dotenv
+load_dotenv()
+import os
 
 # ---------------------- 全局配置（你的默认目录） ----------------------
-DEFAULT_TARGET_LANG = "日语"  # 默认翻译目标语言
-DEFAULT_DELAY = 1.2  # 每次翻译后的延迟，单位秒（可调整，过快可能触发API限速）
+DEFAULT_TARGET_LANG = os.getenv("TRANSLATE_TARGET_LANG") or "日语"  # 默认翻译目标语言
+DEFAULT_DELAY = os.getenv("TRANSLATE_DELAY") or 1.2  # 每次翻译后的延迟，单位秒（可调整，过快可能触发API限速）
 MAX_CONTEXT_LENGTH = 2000  # 上下文最大长度（防止Token超限）
+TRANSLATE_LLM_MODEL = os.getenv("TRANSLATE_LLM_MODEL") or "qwen-plus"
+TRANSLATE_BASE_URL = os.getenv("TRANSLATE_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+TRANSLATE_API_KEY = os.getenv("TRANSLATE_API_KEY")
 
 # 全局客户端
 _client = None
@@ -19,8 +25,8 @@ def _get_client(force_recreate=False):
     """获取OpenAI客户端（适配DashScope兼容模式）"""
     global _client
     if _client is None or force_recreate:
-        api_key = os.environ.get("OPENAI_API_KEY", "sk-10579025107e412983a48273c2ff7d3f")  # 替换成你的API Key
-        base_url = os.environ.get("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        api_key = TRANSLATE_API_KEY
+        base_url = TRANSLATE_BASE_URL
         http_client = httpx.Client(
             timeout=httpx.Timeout(10.0, connect=20.0),  # 显式设置超时
             follow_redirects=True,
@@ -100,7 +106,7 @@ def translate_text(text: str, target_lang: str = DEFAULT_TARGET_LANG, delay: flo
             client = _get_client(force_recreate=(attempt > 0))
             # 修正：使用正确的OpenAI调用方法（chat.completions.create）
             resp = client.chat.completions.create(
-                model="qwen-plus",
+                model=TRANSLATE_LLM_MODEL,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}

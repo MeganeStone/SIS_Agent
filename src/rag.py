@@ -11,19 +11,30 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.output_parsers import StrOutputParser
 
 from rerank import DashScopeRerank
-from vector_db_new import get_all_parent_docs
+from vector_db import get_all_parent_docs
 from synonyms import expand_query_synonyms
 from custom_parent_document_retriever import CustomParentDocumentRetriever  # 导入自定义父文档检索器
+import os
+from dotenv import load_dotenv
+load_dotenv()
+from pathlib import Path
+
+# 获取当前脚本所在目录的父级目录（即 SIS_Agent 根目录）
+SIS_AGENT_ROOT = Path(__file__).parent.parent
 
 # ====================== 全局配置（新手只需改这里） ======================
 # 4. 大模型配置（请替换为自己的API Key）
-DASHSCOPE_API_KEY = "sk-10579025107e412983a48273c2ff7d3f"  # 替换成自己的！
+RAG_API_KEY = os.getenv("RAG_API_KEY")  # 替换成自己的！
+RAG_BASE_URL = os.getenv("RAG_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"  # 替换成自己的！
+RAG_MODEL_NAME = os.getenv("RAG_LLM_MODEL") or "qwen-plus"  # 替换成你想用的模型，如 "qwen3.5-plus" 或 "qwen-plus"
+RERANK_API_KEY = os.getenv("RERANK_API_KEY")  # 替换成自己的！
+PARENT_STORE_DIR = os.getenv("PARENT_STORE_DIR") or str(SIS_AGENT_ROOT / "parent_store")  # 父文档存储路径
 
 LLM = ChatOpenAI(
-    model="qwen-plus",
+    model=RAG_MODEL_NAME,
     temperature=0.1,
-    api_key=DASHSCOPE_API_KEY,
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    api_key=RAG_API_KEY,
+    base_url=RAG_BASE_URL,
     timeout=300,
     extra_body={"enable_search": True}
 )
@@ -59,7 +70,7 @@ def format_docs_with_metadata(docs):
 
 def build_qa_chain(vector_db):
     # 1. 加载父文档存储
-    parent_store_dir = "../parent_store"
+    parent_store_dir = PARENT_STORE_DIR
     docstore = LocalFileStore(parent_store_dir)
     child_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)  # 和vector_db_new.py中一致
        
@@ -97,7 +108,7 @@ def build_qa_chain(vector_db):
     
     # 5. 添加重排序器（使用百炼的rerank模型）
     rerank_compressor = DashScopeRerank(
-        api_key=DASHSCOPE_API_KEY,
+        api_key=RERANK_API_KEY,
         model="qwen3-rerank",
         top_n=3
     )
