@@ -21,17 +21,14 @@ TRANSLATE_API_KEY = os.getenv("TRANSLATE_API_KEY")
 _client = None
 _translation_cache = {}
 
-def _get_client(force_recreate=False):
+def _create_client(api_key: str):
     """获取OpenAI客户端（适配DashScope兼容模式）"""
-    global _client
-    if _client is None or force_recreate:
-        api_key = TRANSLATE_API_KEY
-        base_url = TRANSLATE_BASE_URL
-        http_client = httpx.Client(
-            timeout=httpx.Timeout(10.0, connect=20.0),  # 显式设置超时
-            follow_redirects=True,
-        )
-        _client = OpenAI(api_key=api_key, base_url=base_url, http_client=http_client)
+    base_url = TRANSLATE_BASE_URL
+    http_client = httpx.Client(
+        timeout=httpx.Timeout(10.0, connect=20.0),  # 显式设置超时
+        follow_redirects=True,
+    )
+    _client = OpenAI(api_key=api_key, base_url=base_url, http_client=http_client)
     return _client
 
 def translate_text(text: str, target_lang: str = DEFAULT_TARGET_LANG, delay: float = DEFAULT_DELAY, 
@@ -44,6 +41,7 @@ def translate_text(text: str, target_lang: str = DEFAULT_TARGET_LANG, delay: flo
     :param context: 上下文信息
     :return: 翻译结果
     """
+    api_key = os.environ.get("TRANSLATE_API_KEY")  # 由上层工具设置
     # 初始化默认上下文
     context = context or {
         "file_name": "未知文件",
@@ -103,7 +101,7 @@ def translate_text(text: str, target_lang: str = DEFAULT_TARGET_LANG, delay: flo
     # 重试策略
     for attempt in range(2):
         try:
-            client = _get_client(force_recreate=(attempt > 0))
+            client = _create_client(api_key=api_key)
             # 修正：使用正确的OpenAI调用方法（chat.completions.create）
             resp = client.chat.completions.create(
                 model=TRANSLATE_LLM_MODEL,

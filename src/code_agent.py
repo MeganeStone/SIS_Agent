@@ -15,14 +15,6 @@ CODE_AGENT_API_KEY = os.getenv("CODE_AGENT_API_KEY")  # 或者从主程序传入
 url = os.getenv("CODE_AGENT_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
 model = os.getenv("CODE_AGENT_LLM_MODEL") or "qwen3.5-plus"
 
-LLM = ChatOpenAI(
-    model=model,
-    temperature=0.1,
-    api_key=CODE_AGENT_API_KEY,
-    base_url=url,
-    extra_body={"enable_search": True},
-    stream_options={"include_usage": True},
-)
 checkpointer = InMemorySaver()
 # ---------- 工具定义 ----------
 @tool
@@ -107,12 +99,21 @@ def create_transfer_to_main_tool(main_agent_name: str = "main_agent"):
     return transfer_to_main_agent
 
 # ---------- 创建代码助手 Agent ----------
-def create_code_agent(main_agent_node_name: str = "main_agent"):
+def create_code_agent(main_agent_node_name: str = "main_agent", dashscope_api_key: str = None):
     """返回代码助手 Agent 实例"""
     tools = [execute_shell, read_file, write_file]
     # 添加交接工具（动态生成，依赖主 Agent 节点名）
     transfer_tool = create_transfer_to_main_tool(main_agent_node_name)
     tools.append(transfer_tool)
+
+    LLM = ChatOpenAI(
+        model=model,
+        temperature=0.1,
+        api_key=dashscope_api_key,
+        base_url=url,
+        extra_body={"enable_search": True},
+        stream_options={"include_usage": True},
+    )
     
     system_prompt = """你是一个代码助手，擅长编写、执行和调试代码。你的工具包括：
 - execute_shell: 执行 Linux 命令

@@ -48,16 +48,16 @@ def _get_path_hash(file_path: str) -> str:
     return hashlib.md5(file_path.encode('utf-8')).hexdigest()
 
 # 嵌入模型配置（阿里云百炼）
-def load_embedding_model():
+def load_embedding_model(dashscope_api_key: str):
     return DashScopeEmbeddings(
         model=EMBEDDING_MODEL,
-        dashscope_api_key=EMBEDDING_API_KEY
+        dashscope_api_key=dashscope_api_key
     )
 
-def create_parent_child_docs(file_path):
+def create_parent_child_docs(file_path, dashscope_api_key: str):
     """从文件生成父子文档对，返回 (child_docs, parent_docs)"""
     # 先调用 load_and_aggregate_docs 获取已处理的文档（含图片描述）
-    parent_docs = load_and_aggregate_docs(file_path)
+    parent_docs = load_and_aggregate_docs(file_path,dashscope_api_key)
     if parent_docs is None:
         # 如果 Unstructured 失败，回退到手动方法（例如 load_ppt_doc/load_excel_doc）
         # 这里需要你根据文件类型实现回退
@@ -93,10 +93,10 @@ def get_all_parent_docs(store_dir: str = PARENT_STORE_DIR):
             parent_docs.append(doc)
     return parent_docs
 
-def load_file_to_parent_child(file_path):
+def load_file_to_parent_child(file_path, dashscope_api_key: str):
     """根据文件类型返回 (child_docs, parent_docs)"""
     if file_path.endswith((".pdf",'.pptx', '.xlsx', ".docx")):
-        return create_parent_child_docs(file_path)
+        return create_parent_child_docs(file_path,dashscope_api_key)
     else:
         # TXT：使用原有加载方式，每个块同时作为父块和子块
         docs = load_single_doc(file_path)  # 返回 Document 列表
@@ -111,7 +111,7 @@ def load_file_to_parent_child(file_path):
         return child_docs, parent_docs
     
 # 定义统一的 Unstructured 加载函数（支持自动分区和图片描述）
-def load_with_unstructured(file_path, use_blip=True):
+def load_with_unstructured(file_path, use_blip=True, dashscope_api_key: str = None):
     """
     使用 Unstructured 解析文件，返回 Document 列表。
     对 Image 元素调用 BLIP 生成描述。
@@ -147,7 +147,7 @@ def load_with_unstructured(file_path, use_blip=True):
                 # 尝试从 metadata 中获取图片二进制数据
                 # Unstructured 的 Image 元素通常会将图片保存为临时文件，路径在 metadata['image_path']
                 # 1. 加载在线模型服务
-                image_caption_func = load_vision_model()
+                image_caption_func = load_vision_model(dashscope_api_key)
                 image_path = element.metadata.get('image_path')
                 if image_path and os.path.exists(image_path):
                     desc = image_caption_func(image_path)
@@ -245,13 +245,13 @@ def aggregate_excel_docs(docs: list[Document], chunk_size: int = 10) -> list[Doc
     
     return aggregated_docs
 
-def load_and_aggregate_docs(file_path: str, use_blip: bool = True) -> list[Document]:
+def load_and_aggregate_docs(file_path: str, use_blip: bool = True, dashscope_api_key: str = None) -> list[Document]:
     """
     加载文件并根据文件类型进行智能聚合，生成适合作为父文档的列表。
     这是你应该在主流程中调用的函数。
     """
     # 第一步：使用你原有的函数进行精细解析
-    raw_docs = load_with_unstructured(file_path, use_blip=use_blip)
+    raw_docs = load_with_unstructured(file_path, use_blip=use_blip, dashscope_api_key=dashscope_api_key)
     
     # 第二步：根据文件后缀名选择聚合策略
     if file_path.lower().endswith((".pdf", ".pptx", ".docx", ".doc")):
@@ -265,7 +265,7 @@ def load_and_aggregate_docs(file_path: str, use_blip: bool = True) -> list[Docum
         return raw_docs
     
 @functools.lru_cache(maxsize=1)
-def load_vision_model():
+def load_vision_model(dashscope_api_key: str):
     """
     阿里百炼 在线多模态模型（无需本地加载）
     直接返回调用函数，替代BLIP
@@ -283,7 +283,7 @@ def load_vision_model():
         ]
         # 调用通义千问VL模型
         response = MultiModalConversation.call(
-            api_key=IMAGE_CAPTION_API_KEY,
+            api_key=dashscope_api_key,
             model=IMAGE_CAPTION_LLM_MODEL,  # 免费高速模型
             messages=messages
         )
@@ -297,8 +297,6 @@ TEXT_SPLITTER = RecursiveCharacterTextSplitter(
     chunk_overlap=200,
     separators=["\n\n", "\n", "。", "！", "？", "，", "、", " ", "."],
 )
-
-EMBEDDINGS = load_embedding_model()  # 加载嵌入模型（包含路径处理和错误提示）
 
 def init_docs_dir():
     """初始化本地文档文件夹（不存在则创建）"""
@@ -346,7 +344,7 @@ def load_single_doc(file_path):
     else:
         return []
     
-def diff_update_vector_db():
+def diff_update_vector_db(dashscope_api_key: str):
     """
     差分更新向量库（核心！只处理增/删/改的文件）
     逻辑：
@@ -358,6 +356,7 @@ def diff_update_vector_db():
     start_time = time.time()
     print("🔍 开始差分更新向量库...")
     
+    EMBEDDINGS = load_embedding_model(dashscope_api_key)  # 加载嵌入模型（包含路径处理和错误提示）
     # 1. 获取本地文件信息和向量库
     local_docs = get_local_docs_info()
     vector_db = Chroma(collection_name="all_child_docs", persist_directory=VECTOR_DB_DIR, embedding_function=EMBEDDINGS)
@@ -461,8 +460,9 @@ def diff_update_vector_db():
     return vector_db
 
 # 初始化向量库的函数（首次全量，后续直接加载）
-def init_or_load_vector_db():
+def init_or_load_vector_db(dashscope_api_key: str):
     """初始化/加载向量库（首次全量，后续差分）"""
+    EMBEDDINGS = load_embedding_model(dashscope_api_key)  # 加载嵌入模型（包含路径处理和错误提示）
     try:
         # 确保 docstore 目录存在
         parent_store_dir = PARENT_STORE_DIR
@@ -477,7 +477,7 @@ def init_or_load_vector_db():
             for file_name, file_info in local_docs.items():
                 print(f"📄 加载文件：{file_name}")
                 # 生成父子文档
-                child_docs, parent_docs = load_file_to_parent_child(file_info["path"])
+                child_docs, parent_docs = load_file_to_parent_child(file_info["path"],dashscope_api_key)
                 all_child_docs.extend(child_docs)
                 all_parent_docs.extend(parent_docs)
 
@@ -513,11 +513,11 @@ def init_or_load_vector_db():
         return Chroma(collection_name="all_child_docs", persist_directory=VECTOR_DB_DIR, embedding_function=EMBEDDINGS)
 
 
-def get_vector_db():
+def get_vector_db(dashscope_api_key: str):
     """获取全局向量库实例（确保已初始化）"""
     global _global_vector_db
     if _global_vector_db is None:
-        _global_vector_db = init_or_load_vector_db()
+        _global_vector_db = init_or_load_vector_db(dashscope_api_key)
         print(f"【向量库初始化完成】当前文档数量：{len(_global_vector_db.get()['metadatas'])}")
     else:
         print("【向量库实例已存在】直接使用")

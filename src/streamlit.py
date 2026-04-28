@@ -9,7 +9,6 @@ warnings.filterwarnings("ignore")  # 屏蔽新手无关的警告
 # 1. 导入LangChain核心模块
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, AIMessageChunk, ToolMessageChunk
-from langgraph.errors import GraphRecursionError
 from langsmith import traceable
 import asyncio
 import nest_asyncio
@@ -18,6 +17,7 @@ import os
 from rag import build_qa_chain  # 导入RAG问答链函数
 from vector_db import TBOX_DOCS_DIR, diff_update_vector_db, get_local_docs_info  # 导入文档目录配置
 from multi_agent import build_top_graph  # 导入创建Agent的函数
+from exceptions import InvalidAPIKeyError
 
 # 应用 nest_asyncio 以允许在已有事件循环中运行新的 asyncio.run()
 # 强制使用原生 asyncio 事件循环，避免 uvloop
@@ -32,6 +32,22 @@ st.set_page_config(
 
 def main():
     st.title("🚗 畅星TSU开发助手Agent（支持文件翻译、本地知识库查询）")
+
+    with st.sidebar:
+        st.header("🔑 配置")
+        dashscope_key = st.text_input("DashScope API Key", type="password",
+                                      help="用于大模型、翻译、重排序等服务")
+        volc_key = st.text_input("火山引擎 API Key", type="password",
+                                 help="用于联网搜索")
+
+        if not dashscope_key or not volc_key:
+            st.warning("请输入所有 API Key 后开始使用")
+            st.stop()
+
+        # 保存到 session_state，供其他模块使用
+        st.session_state.dashscope_api_key = dashscope_key
+        st.session_state.volc_api_key = volc_key
+
     st.markdown(f"""
     📂 本地文档目录：{TBOX_DOCS_DIR}
     📌 支持格式：PDF/TXT（中日英）
@@ -45,7 +61,7 @@ def main():
 
     # 初始化Agent（会话级缓存）
     if "top_graph" not in st.session_state:
-        st.session_state.top_graph = build_top_graph()
+        st.session_state.top_graph = build_top_graph(dashscope_api_key=dashscope_key,volc_api_key=volc_key)
         st.info(f"成功创建TBOX智能助手Agent！")
         print("✅ 成功创建TBOX智能助手Agent！")
 
@@ -76,7 +92,7 @@ def main():
         
         # 手动更新向量库按钮
         if st.button("🔄 手动更新向量库", type="primary"):
-            new_vector_db = diff_update_vector_db()
+            new_vector_db = diff_update_vector_db(dashscope_key)
             # 2. 重新构建qa_chain（关键：用最新的向量库）
             new_qa_chain = build_qa_chain(new_vector_db)
             st.session_state.qa_chain = new_qa_chain  # 更新QA链
@@ -210,7 +226,11 @@ def main():
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
 
-            final_answer = loop.run_until_complete(process_with_events())
+            try:
+                final_answer = loop.run_until_complete(process_with_events())
+            except InvalidAPIKeyError as e:
+                message_placeholder.markdown(str(e))
+                return
             # 清除占位符内容（页面上直接消失）
             stats_placeholder.empty()
             # 最终显示去除光标

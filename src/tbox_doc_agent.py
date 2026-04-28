@@ -18,7 +18,7 @@ from langchain.tools import tool, ToolRuntime
 from langgraph.types import Command
 
 # 注意：如果你的tools/rag_new/vector_db_new文件路径不对，需自行调整
-from tools import translate_file_tool, create_rag_qa_tool, web_search  # 导入翻译工具和RAG工具
+from tools import create_translate_file_tool, create_rag_qa_tool, create_web_search_tool  # 导入翻译工具和RAG工具
 from rag import build_qa_chain  # 导入RAG问答链函数
 from vector_db import get_vector_db  # 导入文档目录配置
 from dotenv import load_dotenv
@@ -29,21 +29,11 @@ MAIN_AGENT_API_KEY = os.getenv("MAIN_AGENT_API_KEY")  # 替换成自己的！
 MAIN_AGENT_BASE_URL = os.getenv("MAIN_AGENT_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"  # 替换成自己的！
 MAIN_AGENT_LLM_MODEL = os.getenv("MAIN_AGENT_LLM_MODEL") or "qwen3.5-plus" 
 # ====================== 第一步：基础配置（大模型/嵌入/文本分割） ======================
-LLM = ChatOpenAI(
-    model=MAIN_AGENT_LLM_MODEL,
-    temperature=0.1,
-    api_key=MAIN_AGENT_API_KEY,
-    base_url=MAIN_AGENT_BASE_URL,
-    timeout=300,
-    extra_body={"enable_search": True},
-    stream_options={"include_usage": True},
-)
-
 # 1. 主线程初始化向量库（有SessionContext，可加st提示）
-def init_vector_db_in_main():
+def init_vector_db_in_main(dashscope_api_key: str):
     """主线程初始化向量库（可加Streamlit提示）"""
     with st.spinner("📦 初始化向量库中..."):
-        vector_db = get_vector_db()
+        vector_db = get_vector_db(dashscope_api_key)
         doc_count = len(vector_db.get()['metadatas']) if vector_db else 0
         st.success(f"✅ 向量库初始化完成，当前文档数量：{doc_count}")
     return vector_db
@@ -61,7 +51,7 @@ def create_transfer_to_code_tool(code_agent_node_name: str = "code_agent"):
     return transfer_to_code_agent
 
 # ====================== 创建React Agent（兼容自定义LLM） ======================
-def create_tbox_agent(code_agent_node_name: str = "code_agent"):
+def create_tbox_agent(code_agent_node_name: str = "code_agent", dashscope_api_key: str = None, volc_api_key: str = None):
     """创建TBOX智能体（改用React Agent，兼容自定义QwenChat）"""
     # 适配create_agent的system_prompt（纯字符串，无动态变量）
     system_prompt = """
@@ -94,16 +84,29 @@ def create_tbox_agent(code_agent_node_name: str = "code_agent"):
     1. 回答语言要和用户问题一致（用户问中文答中文，问日文答日文，问英文答英文）；
     """
     # 步骤1：初始化向量库（主线程执行，有SessionContext）
-    vector_db = init_vector_db_in_main()
+    vector_db = init_vector_db_in_main(dashscope_api_key)
     # 步骤2：构建RAG Chain（依赖注入：传入vector_db）
-    qa_chain = build_qa_chain(vector_db)
+    qa_chain = build_qa_chain(vector_db, dashscope_api_key)
     # 步骤3：创建工具（依赖注入：传入qa_chain）
     rag_qa_tool = create_rag_qa_tool(qa_chain)  # RAG工具
+    # 创建工具（注入用户密钥）
+    translate_file_tool = create_translate_file_tool(dashscope_api_key)
+    web_search = create_web_search_tool(volc_api_key)
     # 步骤4：构建工具列表
     tools = [translate_file_tool, rag_qa_tool, web_search]  # 工具列表
     # 添加交接工具
     transfer_tool = create_transfer_to_code_tool(code_agent_node_name)
     tools.append(transfer_tool)
+    LLM = ChatOpenAI(
+        model=MAIN_AGENT_LLM_MODEL,
+        temperature=0.1,
+        api_key=dashscope_api_key,
+        base_url=MAIN_AGENT_BASE_URL,
+        timeout=300,
+        extra_body={"enable_search": True},
+        stream_options={"include_usage": True},
+    )
+
     # 创建Agent
     agent = create_agent(
         model=LLM, 

@@ -30,15 +30,6 @@ RAG_MODEL_NAME = os.getenv("RAG_LLM_MODEL") or "qwen-plus"  # 替换成你想用
 RERANK_API_KEY = os.getenv("RERANK_API_KEY")  # 替换成自己的！
 PARENT_STORE_DIR = os.getenv("PARENT_STORE_DIR") or str(SIS_AGENT_ROOT / "parent_store")  # 父文档存储路径
 
-LLM = ChatOpenAI(
-    model=RAG_MODEL_NAME,
-    temperature=0.1,
-    api_key=RAG_API_KEY,
-    base_url=RAG_BASE_URL,
-    timeout=300,
-    extra_body={"enable_search": True}
-)
-
 # 【核心】给BM25注册中文分词器
 def chinese_tokenizer(text: str):
     return jieba.lcut(text)
@@ -68,7 +59,7 @@ def format_docs_with_metadata(docs):
     # 合并所有文档
     return "\n".join(formatted_docs)
 
-def build_qa_chain(vector_db):
+def build_qa_chain(vector_db, dashscope_api_key):
     # 1. 加载父文档存储
     parent_store_dir = PARENT_STORE_DIR
     docstore = LocalFileStore(parent_store_dir)
@@ -108,13 +99,22 @@ def build_qa_chain(vector_db):
     
     # 5. 添加重排序器（使用百炼的rerank模型）
     rerank_compressor = DashScopeRerank(
-        api_key=RERANK_API_KEY,
+        api_key=dashscope_api_key,
         model="qwen3-rerank",
         top_n=3
     )
     final_retriever = ContextualCompressionRetriever(
         base_compressor=rerank_compressor,
         base_retriever=base_retriever
+    )
+    
+    LLM = ChatOpenAI(
+        model=RAG_MODEL_NAME,
+        temperature=0.1,
+        api_key=dashscope_api_key,
+        base_url=RAG_BASE_URL,
+        timeout=300,
+        extra_body={"enable_search": True}
     )
     
     # 6. 构建提示模板和链（与之前类似）

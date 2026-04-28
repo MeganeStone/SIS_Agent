@@ -8,13 +8,14 @@ services:
       - "8501:8501"
     volumes:
       # 挂载整个项目源代码目录（覆盖镜像内的 /app）
-      - .:/app
+      - ./src:/app/src:ro
+      - ./tbox_docs:/app/data/tbox_docs:ro
+      - ./parent_store:/app/data/parent_store
+      - ./tbox_vector_db:/app/data/tbox_vector_db
+      - ./translate/input:/app/data/translate_input:ro
+      - ./translate/output:/app/data/translate_output
       # 数据目录单独挂载（确保数据持久化）
-      - D:/AI/SIS_agent/tbox_docs:/app/data/tbox_docs
-      - D:/AI/SIS_agent/parent_store:/app/data/parent_store
-      - D:/AI/SIS_agent/tbox_vector_db:/app/data/tbox_vector_db
-      - D:/AI/SIS_agent/translate/input:/app/data/translate_input
-      - D:/AI/SIS_agent/translate/output:/app/data/translate_output
+      - ./workspace:/app/data/workspace
       # .env 文件（已通过上面的 . 挂载包含，但为了明确权限，保留只读）
       - ./.env:/app/.env:ro
     env_file:
