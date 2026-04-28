@@ -54,8 +54,6 @@ def create_web_search_tool(volc_api_key: str):
             # 使用 stream=True 接收流式响应
             with requests.post(url, headers=headers, json=payload, stream=True, timeout=30) as resp:
                 resp.encoding = 'utf-8'
-                if resp.status_code == 401 or resp.status_code == 403:
-                    raise InvalidAPIKeyError("火山引擎 API Key 无效，请检查后重试")
                 resp.raise_for_status()      # 检查 HTTP 状态码
                 full_content = ""
 
@@ -87,12 +85,15 @@ def create_web_search_tool(volc_api_key: str):
                             continue  # 跳过解析失败的行
                     else:
                         print(f"非数据行")  # 调试输出非数据行
+                        line = json.loads(line)  # 尝试解析为JSON
+                        if line["ResponseMetadata"].get("Error").get("Code") == "invalid_api_key":
+                            raise InvalidAPIKeyError("火山引擎API Key 无效，请检查后重试")
                 print(f"\n【Web搜索工具】")
                 print(f"  搜索查询：{query}")
                 print(f"  搜索结果（前200字符）：{full_content.strip()[:200]}...")
                 return full_content.strip() if full_content else "未获取到有效总结内容"
         except InvalidAPIKeyError:
-            raise InvalidAPIKeyError("API Key 无效，请检查后重试")
+            raise InvalidAPIKeyError("火山引擎API Key 无效，请检查后重试")
         except requests.RequestException as e:
             print(f"Web搜索工具调用失败: {str(e)}")
             return f"搜索失败: {str(e)}"
