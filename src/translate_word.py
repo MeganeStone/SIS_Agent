@@ -18,7 +18,7 @@ DEFAULT_INPUT_DIR = os.getenv("TRANSLATE_INPUT_DIR") or str(SIS_AGENT_ROOT / "tr
 DEFAULT_OUTPUT_DIR = os.getenv("TRANSLATE_OUTPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "output")
 DEFAULT_TARGET_LANG = os.getenv("TRANSLATE_TARGET_LANG") or "日语"
 DEFAULT_DELAY = os.getenv("TRANSLATE_DELAY") or 1.2
-MAX_WORKERS = os.getenv("MAX_WORKERS") or 6
+MAX_WORKERS = int(os.getenv("MAX_WORKERS") or 6)
 
 
 def _paragraph_has_picture(paragraph):

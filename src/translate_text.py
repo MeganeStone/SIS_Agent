@@ -7,7 +7,6 @@ from openai import APIError, RateLimitError, APITimeoutError, APIConnectionError
 import httpx
 from dotenv import load_dotenv
 load_dotenv()
-import os
 
 # ---------------------- 全局配置（你的默认目录） ----------------------
 DEFAULT_TARGET_LANG = os.getenv("TRANSLATE_TARGET_LANG") or "日语"  # 默认翻译目标语言

@@ -13,6 +13,7 @@ from langsmith import traceable
 import asyncio
 import nest_asyncio
 import os
+from pathlib import Path
 
 from rag import build_qa_chain  # 导入RAG问答链函数
 from vector_db import TBOX_DOCS_DIR, diff_update_vector_db, get_local_docs_info  # 导入文档目录配置
@@ -29,6 +30,16 @@ st.set_page_config(
     page_icon="🚗",
     layout="wide"
 )
+# 获取当前脚本所在目录的父级目录（即 SIS_Agent 根目录）
+SIS_AGENT_ROOT = Path(__file__).parent.parent
+DEFAULT_INPUT_DIR = os.getenv("TRANSLATE_INPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "input")
+DEFAULT_OUTPUT_DIR = os.getenv("TRANSLATE_OUTPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "output")
+
+def get_translate_files(directory):
+    """获取目录下所有文件名及完整路径"""
+    if not os.path.exists(directory):
+        return []
+    return [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
 
 def main():
     st.title("🚗 畅星TSU开发助手Agent（支持文件翻译、本地知识库查询）")
@@ -48,6 +59,47 @@ def main():
         st.session_state.dashscope_api_key = dashscope_key
         st.session_state.volc_api_key = volc_key
 
+    st.sidebar.markdown("---")
+    st.sidebar.header("📂 翻译文件管理")
+    # 上传区域
+    uploaded_file = st.sidebar.file_uploader("上传待翻译文件", type=["pptx", "xlsx", "docx"])
+    if uploaded_file is not None:
+        # # 生成唯一文件名：时间戳_6位随机_原始文件名
+        # timestamp = int(time.time())
+        # unique_prefix = f"{timestamp}_{os.urandom(3).hex()}_"
+        saved_name = uploaded_file.name
+        save_path = os.path.join(DEFAULT_INPUT_DIR, saved_name)
+        with open(save_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.sidebar.success(f"✅ 已上传，文件名为：{saved_name}")
+
+    # 已翻译文件列表
+    st.sidebar.subheader("📥 下载翻译文件")
+    output_files = get_translate_files(DEFAULT_OUTPUT_DIR)
+    if output_files:
+        for fname in output_files:
+            file_path = os.path.join(DEFAULT_OUTPUT_DIR, fname)
+            col1, col2 = st.sidebar.columns([3, 1])
+            col1.write(f"`{fname}`")
+            # 下载按钮
+            with open(file_path, "rb") as f:
+                col2.download_button(
+                    label="⬇️",
+                    data=f,
+                    file_name=fname,
+                    key=f"dl_{fname}",
+                    help="下载此文件"
+                )
+            # 删除按钮
+            if col2.button("🗑️", key=f"del_{fname}", help="删除此文件"):
+                os.remove(file_path)
+                st.rerun()
+    else:
+        st.sidebar.info("暂无翻译完成的文件")
+
+    # 可选：清空输入目录按钮（谨慎使用）
+    if st.sidebar.button("刷新"):
+        st.rerun()
     st.markdown(f"""
     📂 本地文档目录：{TBOX_DOCS_DIR}
     📌 支持格式：PDF/TXT（中日英）

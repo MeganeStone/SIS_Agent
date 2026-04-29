@@ -28,4 +28,4 @@ def translate_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, output_d
         return translate_word_file(file_name, source_dir, output_dir, target_lang, delay)
 
     else:
-        raise ToolException(f"不支持的文件类型: {ext}，仅支持.pptx和.xlsx")
+        raise ToolException(f"不支持的文件类型: {ext}，仅支持.pptx、.xlsx和.docx")

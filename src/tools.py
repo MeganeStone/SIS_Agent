@@ -110,9 +110,9 @@ def create_web_search_tool(volc_api_key: str):
 # ====================== 第四步：工具封装 ======================
 class TranslateFileInput(BaseModel):
     file_name: str = Field(description="要翻译的文件名（必须包含后缀，如test.pptx、test.xlsx）")
-    source_dir: Optional[str] = Field(default=DEFAULT_INPUT_DIR, description="源文件目录，默认D:\\seki\\AI\\copilotTest\\input")
-    output_dir: Optional[str] = Field(default=DEFAULT_OUTPUT_DIR, description="输出目录，默认D:\\seki\\AI\\copilotTest\\output")
-    target_lang: Optional[str] = Field(default=DEFAULT_TARGET_LANG, description="目标语言，默认日语")
+    source_dir: Optional[str] = Field(default=DEFAULT_INPUT_DIR, description="源文件目录")
+    output_dir: Optional[str] = Field(default=DEFAULT_OUTPUT_DIR, description="输出目录")
+    target_lang: Optional[str] = Field(default=DEFAULT_TARGET_LANG, description="目标语言")
 
 def create_translate_file_tool(dashscope_api_key: str):
     # 封装文件翻译Tool
