@@ -13,9 +13,12 @@ import yaml
 import os
 import sys
 import subprocess
-import base64
+import platform
+from pathlib import Path
 
-BASE_SKILL_PATH = r"D:\AI\SIS agent\skills"
+# 获取当前脚本所在目录的父级目录（即 SIS_Agent 根目录）
+SIS_AGENT_ROOT = Path(__file__).parent.parent
+BASE_SKILL_PATH = SIS_AGENT_ROOT / "skills"
 # ===================== 1. 动态加载本地 Skills =====================
 SKILLS_FOLDER = "skills"
 class Skill(TypedDict):
@@ -56,7 +59,7 @@ def load_skill(skill_name: str) -> str:
             return f"（✅ 已加载技能：{skill_name}\n\n{skill['content']}"
     return f"❌ 未找到技能，可用：{', '.join(s['name'] for s in SKILLS)}"
 
-# @tool
+@tool
 def execute_shell(command: str) -> str:
     """
     执行 Linux 命令。
@@ -74,10 +77,17 @@ def execute_shell(command: str) -> str:
     if command.strip().startswith("python"):
         command = command.replace("python", f'"{sys.executable}"', 1)
 
+    if platform.system() == "Windows":
+        # Windows 下继续用 wsl（如果你需要 Linux 命令）
+        shell_cmd = ["wsl", "bash", "-c", command]
+    else:
+        # Linux / macOS 直接运行 bash
+        shell_cmd = ["bash", "-c", command]
+
     try:
         result = subprocess.run(
             # Windows + WSL 下执行 Linux 命令
-            ["wsl", "bash", "-c", command],
+            shell_cmd,
             capture_output=True,
             text=True,
             timeout=30,
@@ -85,13 +95,11 @@ def execute_shell(command: str) -> str:
             # 关键：Windows路径 D:\xxx 会自动被 WSL 识别为 /mnt/d/xxx
             cwd=os.getcwd()
         )
-        print(f"命令执行完成，返回码: {result}")  # 调试用，实际部署时可以注释掉
         output = ""
         if result.stdout:
             output += f"[标准输出]\n{result.stdout}\n"
         if result.stderr:
             output += f"[错误输出]\n{result.stderr}\n"
-        print(f"执行命令: {command}\n{output}")  # 调试用，实际部署时可以注释掉
         return output.strip() if output else "[命令执行完成，无任何输出]"
 
     except subprocess.TimeoutExpired:
@@ -101,31 +109,22 @@ def execute_shell(command: str) -> str:
 
 @tool
 def read_file(file_path: str) -> str:
-    """读取文本文件内容（限制大小 5MB）。"""
+    """读取文本文件内容（限制大小 1MB）。"""
     if not os.path.exists(file_path):
         return f"文件不存在: {file_path}"
-    if os.path.getsize(file_path) > 5 * 1024 * 1024:
-        return "文件过大（>5MB），拒绝读取"
-    encodings = ['utf-8', 'gbk', 'utf-16', 'utf-16-le', 'utf-16-be', 'latin-1']
-    for enc in encodings:
-        try:
-            with open(file_path, "r", encoding=enc) as f:
-                content = f.read()
-            # 成功读取后返回内容
-            return content
-        except (UnicodeDecodeError, UnicodeError):
-            continue
-    # 所有编码都失败，返回错误信息
-    return f"无法解码文件 {file_path}，尝试的编码: {', '.join(encodings)}"
+    if os.path.getsize(file_path) > 1024 * 1024:
+        return "文件过大（>1MB），拒绝读取"
+    with open(file_path, "r", encoding="utf-8") as f:
+        return f.read()
 
 @tool
 def write_file(file_path: str, content: str) -> str:
-    """写入文本文件（覆盖模式），路径限制在当前工作目录下。"""
+    """写入文本文件（覆盖模式），路径限制在workspace文件夹下。"""
     # 安全限制：只允许写入当前目录或指定安全目录
-    safe_dir = os.getcwd()
+    safe_dir = SIS_AGENT_ROOT / "workspace"
     abs_path = os.path.abspath(file_path)
-    # if not abs_path.startswith(safe_dir):
-    #     return f"拒绝写入 {abs_path}：不在允许的目录 {safe_dir} 下"
+    if not abs_path.startswith(safe_dir):
+        return f"拒绝写入 {abs_path}：不在允许的目录 {safe_dir} 下"
     try:
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
