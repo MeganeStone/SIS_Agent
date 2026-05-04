@@ -19,6 +19,7 @@ from rag import build_qa_chain  # 导入RAG问答链函数
 from vector_db import TBOX_DOCS_DIR, diff_update_vector_db, get_local_docs_info  # 导入文档目录配置
 from multi_agent import build_top_graph  # 导入创建Agent的函数
 from exceptions import InvalidAPIKeyError
+from langgraph.errors import GraphRecursionError
 
 # 应用 nest_asyncio 以允许在已有事件循环中运行新的 asyncio.run()
 # 强制使用原生 asyncio 事件循环，避免 uvloop
@@ -34,6 +35,10 @@ st.set_page_config(
 SIS_AGENT_ROOT = Path(__file__).parent.parent
 DEFAULT_INPUT_DIR = os.getenv("TRANSLATE_INPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "input")
 DEFAULT_OUTPUT_DIR = os.getenv("TRANSLATE_OUTPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "output")
+WORKSPACE_DIR = SIS_AGENT_ROOT / "workspace"
+# ----- 预算控制变量 -----
+MAX_TURNS = int(os.getenv("MAX_TURNS") or 50)  # 最大循环轮数（LLM 调用次数）
+MAX_BUDGET_TOKENS = int(os.getenv("MAX_BUDGET_TOKENS") or 800000)  # 最大总 token 预算
 
 def get_translate_files(directory):
     """获取目录下所有文件名及完整路径"""
@@ -41,7 +46,28 @@ def get_translate_files(directory):
         return []
     return [f for f in os.listdir(directory) if os.path.isfile(os.path.join(directory, f))]
 
+
+def get_workspace_files(directory):
+    """获取 workspace 目录下所有文件名及完整路径"""
+    if not directory.exists():
+        return []
+    return [f for f in directory.iterdir() if f.is_file()]
+
+
+def get_user_workspace_dir(session_id):
+    """获取用户的 workspace 目录"""
+    return SIS_AGENT_ROOT / "workspace" / session_id
+
 def main():
+    # 生成或获取用户会话 ID
+    if "session_id" not in st.session_state:
+        import uuid
+        st.session_state.session_id = str(uuid.uuid4())
+    
+    session_id = st.session_state.session_id
+    user_workspace_dir = get_user_workspace_dir(session_id)
+    user_workspace_dir.mkdir(parents=True, exist_ok=True)  # 确保目录存在
+
     st.title("🚗 畅星TSU开发助手Agent（支持文件翻译、本地知识库查询）")
 
     with st.sidebar:
@@ -58,6 +84,40 @@ def main():
         # 保存到 session_state，供其他模块使用
         st.session_state.dashscope_api_key = dashscope_key
         st.session_state.volc_api_key = volc_key
+
+    st.sidebar.markdown("---")
+    st.sidebar.header("📂 Workspace 文件管理")
+    st.sidebar.caption("上传到 workspace 后，可被 Code Agent 访问处理，生成结果文件后可下载。")
+
+    uploaded_ws_file = st.sidebar.file_uploader("上传到 workspace", type=None)
+    if uploaded_ws_file is not None:
+        saved_name = uploaded_ws_file.name
+        save_path = user_workspace_dir / saved_name
+        with open(save_path, "wb") as f:
+            f.write(uploaded_ws_file.getbuffer())
+        st.sidebar.success(f"✅ 已上传到 workspace：{saved_name}")
+
+    st.sidebar.subheader("📄 Workspace 当前文件")
+    workspace_files = get_workspace_files(user_workspace_dir)
+    if workspace_files:
+        for file_path in workspace_files:
+            fname = file_path.name
+            col1, col2 = st.sidebar.columns([3, 1])
+            col1.write(f"`{fname}`")
+            with open(file_path, "rb") as f:
+                col2.download_button(
+                    label="⬇️",
+                    data=f,
+                    file_name=fname,
+                    key=f"ws_dl_{session_id}_{fname}",
+                    help="下载 workspace 文件"
+                )
+            if col2.button("🗑️", key=f"ws_del_{session_id}_{fname}", help="删除此 workspace 文件"):
+                file_path.unlink()
+                os.remove(file_path)
+                st.rerun()
+    else:
+        st.sidebar.info("workspace 目录当前无文件")
 
     st.sidebar.markdown("---")
     st.sidebar.header("📂 翻译文件管理")
@@ -113,7 +173,7 @@ def main():
 
     # 初始化Agent（会话级缓存）
     if "top_graph" not in st.session_state:
-        st.session_state.top_graph = build_top_graph(dashscope_api_key=dashscope_key,volc_api_key=volc_key)
+        st.session_state.top_graph = build_top_graph(dashscope_api_key=dashscope_key,volc_api_key=volc_key, workspace_dir=str(user_workspace_dir))
         st.info(f"成功创建TBOX智能助手Agent！")
         print("✅ 成功创建TBOX智能助手Agent！")
 
@@ -150,7 +210,7 @@ def main():
             st.session_state.qa_chain = new_qa_chain  # 更新QA链
             st.info("向量库已更新！")
             print("✅ 向量库已更新！")
-            st.session_state.top_graph = build_top_graph()  # 创建新的Agent实例
+            st.session_state.top_graph = build_top_graph(dashscope_api_key=dashscope_key, volc_api_key=volc_key, workspace_dir=str(user_workspace_dir))  # 创建新的Agent实例
             print("✅ 已创建新的Agent实例，已切换到最新向量库！")
     
     # 核心：单个对话框
@@ -167,9 +227,6 @@ def main():
 
             # 定义一个异步函数来处理 astream_events
             async def process_with_events():
-                # ----- 预算控制变量 -----
-                MAX_TURNS = int(os.getenv("MAX_TURNS") or 50)  # 最大循环轮数（LLM 调用次数）
-                MAX_BUDGET_TOKENS = int(os.getenv("MAX_BUDGET_TOKENS") or 800000)  # 最大总 token 预算
 
                 total_input_tokens = 0
                 total_output_tokens = 0
@@ -260,15 +317,6 @@ def main():
                     return final_answer
                 
                 return final_answer
-                # except GraphRecursionError as gre:
-                #     error_msg = f"❌ 递归错误：已达到最大循环轮数 {MAX_TURNS}，请简化问题或增加轮数限制后重试。"
-                #     message_placeholder.markdown(str(gre))
-                #     return error_msg
-                # except Exception as e:
-                #     error_msg = f"❌ 处理过程中发生错误：{str(e)}"
-                #     message_placeholder.markdown(error_msg)
-                #     print(error_msg)
-                #     return error_msg   
 
             # 同步调用异步函数
             try:
@@ -280,9 +328,17 @@ def main():
 
             try:
                 final_answer = loop.run_until_complete(process_with_events())
+            except GraphRecursionError:
+                final_answer = f"❌ 任务已终止：已达到最大循环轮数 {MAX_TURNS}。请简化问题或增加轮数限制后重试。"
+                message_placeholder.markdown(final_answer)
             except InvalidAPIKeyError as e:
-                message_placeholder.markdown(str(e))
+                final_answer = str(e)
+                message_placeholder.markdown(final_answer)
                 return
+            except Exception as e:
+                final_answer = f"❌ 处理过程中发生错误：{str(e)}。请稍后重试。"
+                message_placeholder.markdown(final_answer)
+                print(f"Friendly error shown to user: {e}")
             # 清除占位符内容（页面上直接消失）
             stats_placeholder.empty()
             # 最终显示去除光标

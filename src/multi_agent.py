@@ -12,10 +12,10 @@ from exceptions import InvalidAPIKeyError
 class MultiAgentState(AgentState):
     active_agent: NotRequired[str]
 
-def build_top_graph(dashscope_api_key,volc_api_key):
+def build_top_graph(dashscope_api_key,volc_api_key, workspace_dir=None):
     # 1. 创建两个 Agent 实例（注意节点名称要与 Command 中的 goto 一致）
     main_agent = create_tbox_agent(code_agent_node_name="code_agent", dashscope_api_key=dashscope_api_key, volc_api_key=volc_api_key)
-    code_agent = create_code_agent(main_agent_node_name="main_agent", dashscope_api_key=dashscope_api_key)
+    code_agent = create_code_agent(main_agent_node_name="main_agent", dashscope_api_key=dashscope_api_key, workspace_dir=workspace_dir)
     main_context = []  # 主Agent的会话上下文
     code_context = []  # 代码Agent的会话上下文
     

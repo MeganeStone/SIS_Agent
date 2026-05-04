@@ -32,7 +32,9 @@ COPY requirements4.txt .
 RUN pip install --no-cache-dir -r requirements4.txt
 
 # 复制所有代码
-COPY . .
+COPY src/ ./src/
+COPY .env .env
+COPY workspace/ ./workspace/
 
 # 创建数据目录（实际会被挂载覆盖）
 RUN mkdir -p /app/data/tbox_docs /app/data/parent_store /app/data/tbox_vector_db \
