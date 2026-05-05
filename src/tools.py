@@ -4,7 +4,7 @@ warnings.filterwarnings("ignore")  # 屏蔽新手无关的警告
 
 # 1. 导入LangChain核心模块
 from typing import Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 from langchain_core.tools import StructuredTool, ToolException
 from langchain.tools import tool
 
@@ -108,16 +108,23 @@ def create_web_search_tool(volc_api_key: str):
     )
     
 # ====================== 第四步：工具封装 ======================
-class TranslateFileInput(BaseModel):
-    file_name: str = Field(description="要翻译的文件名（必须包含后缀，如test.pptx、test.xlsx）")
-    source_dir: Optional[str] = Field(default=DEFAULT_INPUT_DIR, description="源文件目录")
-    output_dir: Optional[str] = Field(default=DEFAULT_OUTPUT_DIR, description="输出目录")
-    target_lang: Optional[str] = Field(default=DEFAULT_TARGET_LANG, description="目标语言")
+def create_translate_file_tool(dashscope_api_key: str, source_dir: str = None, output_dir: str = None):
+    if source_dir is None:
+        source_dir = DEFAULT_INPUT_DIR
+    if output_dir is None:
+        output_dir = DEFAULT_OUTPUT_DIR
 
-def create_translate_file_tool(dashscope_api_key: str):
+    TranslateFileInput = create_model(
+        "TranslateFileInput",
+        file_name=(str, ...),
+        source_dir=(str, source_dir),
+        output_dir=(str, output_dir),
+        target_lang=(str, DEFAULT_TARGET_LANG),
+    )
+
     # 封装文件翻译Tool
-    def _wrap_translation(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, 
-                            output_dir: str = DEFAULT_OUTPUT_DIR, target_lang: str = DEFAULT_TARGET_LANG) -> str:
+    def _wrap_translation(file_name: str, source_dir: str = source_dir,
+                            output_dir: str = output_dir, target_lang: str = DEFAULT_TARGET_LANG) -> str:
         '''用于翻译文件（.pptx、.xlsx等），支持自定义源目录、输出目录和目标语言，默认翻译为日语'''
         try:
             # 这里设置临时环境变量，以便 translate_file 内部调用的 translate_text 能读取

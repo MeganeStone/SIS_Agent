@@ -51,7 +51,7 @@ def create_transfer_to_code_tool(code_agent_node_name: str = "code_agent"):
     return transfer_to_code_agent
 
 # ====================== 创建React Agent（兼容自定义LLM） ======================
-def create_tbox_agent(code_agent_node_name: str = "code_agent", dashscope_api_key: str = None, volc_api_key: str = None):
+def create_tbox_agent(code_agent_node_name: str = "code_agent", dashscope_api_key: str = None, volc_api_key: str = None, translate_source_dir: str = None, translate_output_dir: str = None):
     """创建TBOX智能体（改用React Agent，兼容自定义QwenChat）"""
     # 适配create_agent的system_prompt（纯字符串，无动态变量）
     system_prompt = """
@@ -89,8 +89,8 @@ def create_tbox_agent(code_agent_node_name: str = "code_agent", dashscope_api_ke
     qa_chain = build_qa_chain(vector_db, dashscope_api_key)
     # 步骤3：创建工具（依赖注入：传入qa_chain）
     rag_qa_tool = create_rag_qa_tool(qa_chain)  # RAG工具
-    # 创建工具（注入用户密钥）
-    translate_file_tool = create_translate_file_tool(dashscope_api_key)
+    # 创建工具（注入用户密钥和用户翻译目录）
+    translate_file_tool = create_translate_file_tool(dashscope_api_key, translate_source_dir, translate_output_dir)
     web_search = create_web_search_tool(volc_api_key)
     # 步骤4：构建工具列表
     tools = [translate_file_tool, rag_qa_tool, web_search]  # 工具列表

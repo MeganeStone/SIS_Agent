@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 load_dotenv()  # 自动读取 .env 文件里的所有环境变量
 import time
 import warnings
+import re
 
 warnings.filterwarnings("ignore")  # 屏蔽新手无关的警告
 
@@ -20,6 +21,7 @@ from vector_db import TBOX_DOCS_DIR, diff_update_vector_db, get_local_docs_info 
 from multi_agent import build_top_graph  # 导入创建Agent的函数
 from exceptions import InvalidAPIKeyError
 from langgraph.errors import GraphRecursionError
+from user_store import ensure_user_store_exists, verify_user
 
 # 应用 nest_asyncio 以允许在已有事件循环中运行新的 asyncio.run()
 # 强制使用原生 asyncio 事件循环，避免 uvloop
@@ -54,19 +56,78 @@ def get_workspace_files(directory):
     return [f for f in directory.iterdir() if f.is_file()]
 
 
-def get_user_workspace_dir(session_id):
-    """获取用户的 workspace 目录"""
-    return SIS_AGENT_ROOT / "workspace" / session_id
+def sanitize_username(username: str) -> str:
+    """将用户名转换为安全目录名"""
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", username.strip())
+
+
+def get_user_workspace_dir(username: str):
+    """获取用户的 workspace 目录，按用户名隔离"""
+    return SIS_AGENT_ROOT / "workspace" / sanitize_username(username)
+
+
+def get_user_translate_input_dir(user_workspace_dir: Path) -> Path:
+    """获取用户的翻译输入目录"""
+    return user_workspace_dir / "translate" / "input"
+
+
+def get_user_translate_output_dir(user_workspace_dir: Path) -> Path:
+    """获取用户的翻译输出目录"""
+    return user_workspace_dir / "translate" / "output"
+
+
+def ensure_user_translate_dirs(user_workspace_dir: Path):
+    """确保用户翻译输入/输出目录存在"""
+    get_user_translate_input_dir(user_workspace_dir).mkdir(parents=True, exist_ok=True)
+    get_user_translate_output_dir(user_workspace_dir).mkdir(parents=True, exist_ok=True)
+
+
+def require_login():
+    """确保用户登录，未登录则展示登录框并终止后续页面渲染"""
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+    if "username" not in st.session_state:
+        st.session_state.username = ""
+    if "login_error" not in st.session_state:
+        st.session_state.login_error = ""
+
+    with st.sidebar:
+        st.header("🔐 内部登录")
+        if not st.session_state.logged_in:
+            username = st.text_input("用户名", value=st.session_state.username, key="login_username")
+            password = st.text_input("密码", type="password", key="login_password")
+            submit = st.button("登录")
+            if submit:
+                if verify_user(username.strip(), password):
+                    st.session_state.logged_in = True
+                    st.session_state.username = username.strip()
+                    st.session_state.login_error = ""
+                    st.rerun()
+                else:
+                    st.session_state.logged_in = False
+                    st.session_state.login_error = "用户名或密码错误。请联系管理员后端创建账号。"
+
+            if st.session_state.login_error:
+                st.error(st.session_state.login_error)
+
+            st.stop()
+        else:
+            st.success(f"已登录：{st.session_state.username}")
+            if st.button("退出登录"):
+                st.session_state.clear()
+                st.rerun()
 
 def main():
-    # 生成或获取用户会话 ID
-    if "session_id" not in st.session_state:
-        import uuid
-        st.session_state.session_id = str(uuid.uuid4())
-    
-    session_id = st.session_state.session_id
-    user_workspace_dir = get_user_workspace_dir(session_id)
-    user_workspace_dir.mkdir(parents=True, exist_ok=True)  # 确保目录存在
+    ensure_user_store_exists()
+    require_login()
+
+    username = st.session_state.username
+    safe_username = sanitize_username(username)
+    user_workspace_dir = get_user_workspace_dir(safe_username)
+    user_workspace_dir.mkdir(parents=True, exist_ok=True)
+    ensure_user_translate_dirs(user_workspace_dir)
+    user_translate_input_dir = get_user_translate_input_dir(user_workspace_dir)
+    user_translate_output_dir = get_user_translate_output_dir(user_workspace_dir)
 
     st.title("🚗 畅星TSU开发助手Agent（支持文件翻译、本地知识库查询）")
 
@@ -109,12 +170,11 @@ def main():
                     label="⬇️",
                     data=f,
                     file_name=fname,
-                    key=f"ws_dl_{session_id}_{fname}",
+                    key=f"ws_dl_{safe_username}_{fname}",
                     help="下载 workspace 文件"
                 )
-            if col2.button("🗑️", key=f"ws_del_{session_id}_{fname}", help="删除此 workspace 文件"):
+            if col2.button("🗑️", key=f"ws_del_{safe_username}_{fname}", help="删除此 workspace 文件"):
                 file_path.unlink()
-                os.remove(file_path)
                 st.rerun()
     else:
         st.sidebar.info("workspace 目录当前无文件")
@@ -124,21 +184,18 @@ def main():
     # 上传区域
     uploaded_file = st.sidebar.file_uploader("上传待翻译文件", type=["pptx", "xlsx", "docx"])
     if uploaded_file is not None:
-        # # 生成唯一文件名：时间戳_6位随机_原始文件名
-        # timestamp = int(time.time())
-        # unique_prefix = f"{timestamp}_{os.urandom(3).hex()}_"
         saved_name = uploaded_file.name
-        save_path = os.path.join(DEFAULT_INPUT_DIR, saved_name)
+        save_path = user_translate_input_dir / saved_name
         with open(save_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        st.sidebar.success(f"✅ 已上传，文件名为：{saved_name}")
+        st.sidebar.success(f"✅ 已上传到您的翻译输入目录：{saved_name}")
 
     # 已翻译文件列表
     st.sidebar.subheader("📥 下载翻译文件")
-    output_files = get_translate_files(DEFAULT_OUTPUT_DIR)
+    output_files = get_translate_files(user_translate_output_dir)
     if output_files:
         for fname in output_files:
-            file_path = os.path.join(DEFAULT_OUTPUT_DIR, fname)
+            file_path = user_translate_output_dir / fname
             col1, col2 = st.sidebar.columns([3, 1])
             col1.write(f"`{fname}`")
             # 下载按钮
@@ -151,8 +208,8 @@ def main():
                     help="下载此文件"
                 )
             # 删除按钮
-            if col2.button("🗑️", key=f"del_{fname}", help="删除此文件"):
-                os.remove(file_path)
+            if col2.button("🗑️", key=f"del_{safe_username}_{fname}", help="删除此文件"):
+                file_path.unlink()
                 st.rerun()
     else:
         st.sidebar.info("暂无翻译完成的文件")
@@ -173,7 +230,13 @@ def main():
 
     # 初始化Agent（会话级缓存）
     if "top_graph" not in st.session_state:
-        st.session_state.top_graph = build_top_graph(dashscope_api_key=dashscope_key,volc_api_key=volc_key, workspace_dir=str(user_workspace_dir))
+        st.session_state.top_graph = build_top_graph(
+            dashscope_api_key=dashscope_key,
+            volc_api_key=volc_key,
+            workspace_dir=str(user_workspace_dir),
+            translate_source_dir=str(user_translate_input_dir),
+            translate_output_dir=str(user_translate_output_dir)
+        )
         st.info(f"成功创建TBOX智能助手Agent！")
         print("✅ 成功创建TBOX智能助手Agent！")
 
@@ -210,9 +273,15 @@ def main():
             st.session_state.qa_chain = new_qa_chain  # 更新QA链
             st.info("向量库已更新！")
             print("✅ 向量库已更新！")
-            st.session_state.top_graph = build_top_graph(dashscope_api_key=dashscope_key, volc_api_key=volc_key, workspace_dir=str(user_workspace_dir))  # 创建新的Agent实例
+            st.session_state.top_graph = build_top_graph(
+                dashscope_api_key=dashscope_key,
+                volc_api_key=volc_key,
+                workspace_dir=str(user_workspace_dir),
+                translate_source_dir=str(user_translate_input_dir),
+                translate_output_dir=str(user_translate_output_dir)
+            )  # 创建新的Agent实例
             print("✅ 已创建新的Agent实例，已切换到最新向量库！")
-    
+
     # 核心：单个对话框
     user_input = st.chat_input("请输入您的指令（例如：把test.pptx翻译成日语、TBOX项目的PM是谁？）")
     if user_input:
