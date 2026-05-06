@@ -1,38 +1,39 @@
 import argparse
-import json
-import os
 import secrets
 import hashlib
 import hmac
+import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 SIS_AGENT_ROOT = Path(__file__).resolve().parent.parent
-USER_STORE_PATH = SIS_AGENT_ROOT / "src" / "users.json"
+USER_STORE_DB_PATH = SIS_AGENT_ROOT / "src" / "users.db"
 
+def _get_connection():
+    """返回 SQLite 连接。"""
+    ensure_user_store_exists()
+    conn = sqlite3.connect(USER_STORE_DB_PATH, timeout=10, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def _initialize_db(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
 
 def ensure_user_store_exists() -> None:
-    """确保用户存储文件存在，不存在时创建空 JSON。"""
-    USER_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not USER_STORE_PATH.exists():
-        USER_STORE_PATH.write_text("{}", encoding="utf-8")
-
-
-def load_users() -> dict:
-    """加载账号存储。"""
-    ensure_user_store_exists()
-    try:
-        with USER_STORE_PATH.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        return {}
-
-
-def save_users(users: dict) -> None:
-    """保存账号存储。"""
-    USER_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with USER_STORE_PATH.open("w", encoding="utf-8") as f:
-        json.dump(users, f, indent=2, ensure_ascii=False)
-
+    USER_STORE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(USER_STORE_DB_PATH, timeout=10, check_same_thread=False)
+    _initialize_db(conn)
+    conn.close()
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
     """生成 PBKDF2-SHA256 密码哈希，格式为 salt$hash。"""
@@ -40,7 +41,6 @@ def hash_password(password: str, salt: bytes | None = None) -> str:
         salt = secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200_000)
     return salt.hex() + "$" + digest.hex()
-
 
 def verify_password(password: str, stored_value: str) -> bool:
     """验证密码是否与存储值匹配。"""
@@ -54,41 +54,52 @@ def verify_password(password: str, stored_value: str) -> bool:
     new_digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 200_000)
     return hmac.compare_digest(new_digest, expected)
 
-
 def verify_user(username: str, password: str) -> bool:
     """验证用户名和密码。"""
     if not username or not password:
         return False
-    users = load_users()
-    stored = users.get(username)
-    if not stored:
+    conn = _get_connection()
+    cursor = conn.execute("SELECT password_hash FROM users WHERE username = ?", (username,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
         return False
-    return verify_password(password, stored)
-
+    return verify_password(password, row["password_hash"])
 
 def add_user(username: str, password: str) -> bool:
     """添加或更新用户账号。"""
     if not username or not password:
         return False
-    users = load_users()
-    users[username] = hash_password(password)
-    save_users(users)
+    password_hash = hash_password(password)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _get_connection()
+    conn.execute(
+        "INSERT INTO users (username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)"
+        "ON CONFLICT(username) DO UPDATE SET password_hash=excluded.password_hash, updated_at=excluded.updated_at",
+        (username, password_hash, now, now),
+    )
+    conn.commit()
+    conn.close()
     return True
 
 
 def remove_user(username: str) -> bool:
     """删除用户账号。"""
-    users = load_users()
-    if username not in users:
-        return False
-    users.pop(username)
-    save_users(users)
-    return True
+    conn = _get_connection()
+    cursor = conn.execute("DELETE FROM users WHERE username = ?", (username,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted > 0
 
 
 def list_users() -> list[str]:
     """返回当前所有用户名列表。"""
-    return list(load_users().keys())
+    conn = _get_connection()
+    cursor = conn.execute("SELECT username FROM users ORDER BY username")
+    rows = [row["username"] for row in cursor.fetchall()]
+    conn.close()
+    return rows
 
 
 def main() -> None:
