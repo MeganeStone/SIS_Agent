@@ -2,7 +2,7 @@
 from dotenv import load_dotenv
 load_dotenv()  # 自动读取 .env 文件里的所有环境变量
 from langchain_core.utils.uuid import uuid7
-from typing import TypedDict, List
+from typing import TypedDict, List, Optional
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelRequest, ModelResponse, AgentMiddleware
 from langchain.messages import SystemMessage
@@ -17,47 +17,102 @@ import platform
 from pathlib import Path
 
 # 获取当前脚本所在目录的父级目录（即 SIS_Agent 根目录）
-SIS_AGENT_ROOT = Path(__file__).parent.parent
+SIS_AGENT_ROOT = Path(__file__).resolve().parent.parent
 BASE_SKILL_PATH = SIS_AGENT_ROOT / "skills"
 # ===================== 1. 动态加载本地 Skills =====================
-SKILLS_FOLDER = "skills"
 class Skill(TypedDict):
     name: str
     description: str
     content: str
 
-def parse_skill_markdown(skill_path: str) -> dict:
+
+def parse_skill_markdown(skill_path: Path) -> dict:
     with open(skill_path, "r", encoding="utf-8") as f:
         content = f.read()
     if content.startswith("---"):
         parts = content.split("---", 2)
-        front_matter = yaml.safe_load(parts[1])
-        return {"name": front_matter["name"], "description": front_matter["description"], "content": parts[2].strip()}
-    return {"name": os.path.basename(os.path.dirname(skill_path)), "description": "", "content": content}
+        if len(parts) == 3:
+            front_matter = yaml.safe_load(parts[1]) or {}
+            return {
+                "name": front_matter.get("name", skill_path.stem),
+                "description": front_matter.get("description", ""),
+                "content": parts[2].strip(),
+            }
+    name = skill_path.parent.name if skill_path.name.lower() == "skill.md" else skill_path.stem
+    return {"name": name, "description": "", "content": content.strip()}
 
-def load_local_skills() -> List[Skill]:
-    skills = []
-    if not os.path.exists(SKILLS_FOLDER): os.makedirs(SKILLS_FOLDER)
-    for skill_dir in os.listdir(SKILLS_FOLDER):
-        dir_path = os.path.join(SKILLS_FOLDER, skill_dir)
-        if not os.path.isdir(dir_path): continue
-        skill_md = os.path.join(dir_path, "SKILL.md")
-        if os.path.exists(skill_md):
-            skills.append(Skill(**parse_skill_markdown(skill_md)))
-    return skills
 
-SKILLS = load_local_skills()
+class SkillManager:
+    def __init__(self, skills_dir: Path):
+        self.skills_dir = skills_dir
+        self.skills: List[Skill] = []
+        self.refresh()
+
+    def _ensure_directory(self) -> None:
+        self.skills_dir.mkdir(parents=True, exist_ok=True)
+
+    def _discover_skills(self) -> List[Skill]:
+        self._ensure_directory()
+        skills: List[Skill] = []
+        for entry in sorted(self.skills_dir.iterdir(), key=lambda p: p.name.lower()):
+            if entry.is_dir():
+                skill_md = entry / "SKILL.md"
+                if skill_md.exists():
+                    skills.append(Skill(**parse_skill_markdown(skill_md)))
+            elif entry.is_file() and entry.suffix.lower() in {".md", ".markdown", ".txt"}:
+                skills.append(Skill(**parse_skill_markdown(entry)))
+        return skills
+
+    def refresh(self) -> List[Skill]:
+        self.skills = self._discover_skills()
+        return self.skills
+
+    def find(self, skill_name: str) -> Optional[Skill]:
+        target = skill_name.strip().lower()
+        for skill in self.skills:
+            if skill["name"].strip().lower() == target:
+                return skill
+        return None
+
+    def list_names(self) -> List[str]:
+        return [skill["name"] for skill in self.skills]
+
+    def prompt(self) -> str:
+        if not self.skills:
+            return "暂无可用技能。"
+        return "\n".join(
+            [f"- {s['name']}：{s['description']}" if s['description'] else f"- {s['name']}" for s in self.skills]
+        )
+
+
+SKILL_MANAGER = SkillManager(BASE_SKILL_PATH)
 
 # ===================== 2. 技能加载工具 =====================
 @tool
 def load_skill(skill_name: str) -> str:
-    """加载完整的技能说明书"""
-    for skill in SKILLS:
-        if skill["name"] == skill_name:
-            target_dir = os.path.join(BASE_SKILL_PATH, skill_name)
-            os.chdir(target_dir)
-            return f"（✅ 已加载技能：{skill_name}\n\n{skill['content']}"
-    return f"❌ 未找到技能，可用：{', '.join(s['name'] for s in SKILLS)}"
+    """加载完整的技能说明书，并实时扫描新增技能。"""
+    SKILL_MANAGER.refresh()
+    skill = SKILL_MANAGER.find(skill_name)
+    if skill:
+        return f"✅ 已加载技能：{skill_name}\n\n{skill['content']}"
+    return f"❌ 未找到技能：{skill_name}。可用技能：{', '.join(SKILL_MANAGER.list_names()) or '暂无技能'}"
+
+@tool
+def list_skills() -> str:
+    """返回当前目录下可用技能列表。"""
+    SKILL_MANAGER.refresh()
+    names = SKILL_MANAGER.list_names()
+    if not names:
+        return "当前没有检测到技能，请将 skill 文件或技能目录放到 SIS_Agent/skills/ 下。"
+    return "当前可用技能：" + ", ".join(names)
+
+@tool
+def refresh_skills() -> str:
+    """重新扫描 skills 目录，立即更新技能列表。"""
+    skills = SKILL_MANAGER.refresh()
+    if not skills:
+        return "已刷新技能库：当前没有检测到技能。"
+    return f"已刷新技能库：共 {len(skills)} 个技能，分别为：{', '.join(s['name'] for s in skills)}"
 
 @tool
 def execute_shell(command: str) -> str:
@@ -121,7 +176,7 @@ def read_file(file_path: str) -> str:
 def write_file(file_path: str, content: str) -> str:
     """写入文本文件（覆盖模式），路径限制在workspace文件夹下。"""
     # 安全限制：只允许写入当前目录或指定安全目录
-    safe_dir = SIS_AGENT_ROOT / "workspace"
+    safe_dir = str(SIS_AGENT_ROOT / "workspace")
     abs_path = os.path.abspath(file_path)
     if not abs_path.startswith(safe_dir):
         return f"拒绝写入 {abs_path}：不在允许的目录 {safe_dir} 下"
@@ -135,10 +190,11 @@ def write_file(file_path: str, content: str) -> str:
 # ===================== 4. 技能中间件（集成所有工具） =====================
 class SkillMiddleware(AgentMiddleware):
     # 🔥 所有工具注册在这里：加载技能 + 执行脚本 + 读写文件
-    tools = [load_skill, execute_shell, read_file, write_file]
+    tools = [load_skill, list_skills, refresh_skills, execute_shell, read_file, write_file]
 
     def __init__(self):
-        self.skills_prompt = "\n".join([f"- {s['name']}：{s['description']}" for s in SKILLS])
+        SKILL_MANAGER.refresh()
+        self.skills_prompt = SKILL_MANAGER.prompt()
 
     def wrap_model_call(self, request: ModelRequest, handler: Callable) -> ModelResponse:
         addendum = f"""
@@ -186,13 +242,13 @@ agent = create_agent(
 
 # ===================== 测试 =====================
 if __name__ == "__main__":
-    config = {"configurable": {"thread_id": str(uuid7())},"recursion_limit": 50}  # 限制最大循环步数，防止无限调用工具
-    result = agent.invoke({
-        "messages": [{"role": "user", "content": "根据ref/文件夹下的参考资料和tmp/文件夹下的模板文件，帮我生成一份问题报告的PPT。要中文版的报告，内容要翔实，结构要清晰。"}]
-    }, config)
-    for msg in result["messages"]:
-        msg.pretty_print()
-    # param_str = {'command': 'cd D:\\\\AI\\\\SIS agent\\\\skills\\\\pptx && dir ref'}
-    # actual_command = param_str['command']
-    # response = execute_shell(actual_command)
-    # print(f"响应: {response}")
+    print("=== Skill hot-plug test ===")
+    print("技能目录：", BASE_SKILL_PATH)
+    print(refresh_skills.func())
+    names = SKILL_MANAGER.list_names()
+    if names:
+        print("第一个技能：", names[0])
+        print(load_skill.func(names[0]))
+    else:
+        print("当前没有可用技能，请在 SIS_Agent/skills/ 下添加技能目录或 Markdown 文件后重试。")
+    # 旧的 agent 调用已关闭，现在仅做技能刷新测试。
