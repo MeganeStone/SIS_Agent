@@ -269,7 +269,7 @@ def main():
         if st.button("🔄 手动更新向量库", type="primary"):
             new_vector_db = diff_update_vector_db(dashscope_key)
             # 2. 重新构建qa_chain（关键：用最新的向量库）
-            new_qa_chain = build_qa_chain(new_vector_db)
+            new_qa_chain = build_qa_chain(new_vector_db, dashscope_key)
             st.session_state.qa_chain = new_qa_chain  # 更新QA链
             st.info("向量库已更新！")
             print("✅ 向量库已更新！")

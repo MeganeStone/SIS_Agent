@@ -8,6 +8,8 @@ from langchain.agents.middleware import ModelRequest, ModelResponse, AgentMiddle
 from langchain.messages import SystemMessage
 from langchain.tools import tool, ToolRuntime
 from langgraph.checkpoint.memory import InMemorySaver
+from langchain_core.messages import BaseMessage, AIMessage
+from typing import List, Optional, Any, Dict
 from typing import Callable
 import yaml
 import os
@@ -147,6 +149,7 @@ def execute_shell(command: str) -> str:
             text=True,
             timeout=30,
             encoding='utf-8', 
+            errors='replace',   # 遇到无法解码的字符替换为 �，不抛异常
             # 关键：Windows路径 D:\xxx 会自动被 WSL 识别为 /mnt/d/xxx
             cwd=os.getcwd()
         )
@@ -202,10 +205,7 @@ class SkillMiddleware(AgentMiddleware):
 1. 先使用 load_skill 加载对应技能说明书
 2. 严格按照说明书步骤执行
 3. execute_shell工具只能执行Linux命令，命令必须符合Linux命令规范。
-4. 用 execute_shell 运行 ooxml/scripts/ 下的 Python 脚本
-5. 用 read_file / write_file 管理 JSON 配置文件
-6. 如需执行单行python代码，直接使用execute_shell工具执行。
-7. 如需执行多行python代码，必须先使用write_file工具将代码写进本地临时文件（自己创建），再使用execute_shell运行Python文件。
+4. 只能在workspace文件夹下写入文件
 
 ## 可用技能
 {self.skills_prompt}
@@ -215,14 +215,50 @@ class SkillMiddleware(AgentMiddleware):
 
 # ===================== 5. 初始化 Agent =====================
 from langchain_openai import ChatOpenAI
-DASHSCOPE_API_KEY = "ark-c7bd0c7a-c998-40c5-ae70-ada86b27fec8-c2dfa"  # 或者从主程序传入
 
+# class OpenCodeZenChatOpenAI(ChatOpenAI):
+#     """
+#     增强版自定义 ChatOpenAI 子类，专门解决 OpenCode Zen + DeepSeek V4 的 reasoning_content 回传问题
+#     完美支持 Agent 工具调用场景
+#     """
+#     def _create_message_dicts(
+#         self, messages: List[BaseMessage], stop: Optional[List[str]]
+#     ) -> List[Dict[str, Any]]:
+#         dicts = super()._create_message_dicts(messages, stop)
+        
+#         # 遍历所有消息，检查并回传 reasoning_content
+#         for i, msg in enumerate(messages):
+#             # 处理普通 AI 消息
+#             if isinstance(msg, AIMessage) and hasattr(msg, 'additional_kwargs'):
+#                 if 'reasoning_content' in msg.additional_kwargs:
+#                     dicts[i]['reasoning_content'] = msg.additional_kwargs['reasoning_content']
+            
+#             # 处理工具调用后的 AI 消息（关键！Agent 场景下主要是这种情况）
+#             elif isinstance(msg, AIMessage) and hasattr(msg, 'tool_calls'):
+#                 if hasattr(msg, 'additional_kwargs') and 'reasoning_content' in msg.additional_kwargs:
+#                     dicts[i]['reasoning_content'] = msg.additional_kwargs['reasoning_content']
+        
+#         return dicts
+
+# # 使用增强版类初始化，并添加关键参数
+# LLM = OpenCodeZenChatOpenAI(
+#     model="big-pickle",
+#     temperature=0.1,
+#     api_key="sk-G7XhP7rgwqBckkFBdDEH64IXapISrFTVYL72u9UrzLx6cFneQQ44kiaKxWaWSJvW",
+#     base_url="https://opencode.ai/zen/v1",
+#     # 显式指定思考模式参数（与DeepSeek V4协议兼容）
+#     extra_body={
+#         "thinking": {"type": "enabled"},
+#         "reasoning_effort": "medium"  # 可选：low/medium/high/max
+#     }
+# )
 # BigPickle调用配置（完全免费，200K上下文）
 LLM = ChatOpenAI(
     model="big-pickle",  # 模型ID
     temperature=0.1,
     api_key="sk-G7XhP7rgwqBckkFBdDEH64IXapISrFTVYL72u9UrzLx6cFneQQ44kiaKxWaWSJvW",  # 免费获取
     base_url="https://opencode.ai/zen/v1",  # OpenCode Zen兼容接口
+    extra_body={"thinking": {"type": "disabled"}}
     # 无需AK/SK，无需担心额度，编程Agent专用模型
 )
 
@@ -242,13 +278,10 @@ agent = create_agent(
 
 # ===================== 测试 =====================
 if __name__ == "__main__":
-    print("=== Skill hot-plug test ===")
-    print("技能目录：", BASE_SKILL_PATH)
-    print(refresh_skills.func())
-    names = SKILL_MANAGER.list_names()
-    if names:
-        print("第一个技能：", names[0])
-        print(load_skill.func(names[0]))
-    else:
-        print("当前没有可用技能，请在 SIS_Agent/skills/ 下添加技能目录或 Markdown 文件后重试。")
     # 旧的 agent 调用已关闭，现在仅做技能刷新测试。
+    config = {"configurable": {"thread_id": str(uuid7())},"recursion_limit": 50}  # 限制最大循环步数，防止无限调用工具
+    result = agent.invoke({
+        "messages": [{"role": "user", "content": "根据参考资料和模板文件，帮我生成一份问题报告的PPT。要中文版的报告，内容要翔实，结构要清晰。"}]
+    }, config)
+    for msg in result["messages"]:
+        msg.pretty_print()
