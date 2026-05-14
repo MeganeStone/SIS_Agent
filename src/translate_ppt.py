@@ -22,20 +22,18 @@ DEFAULT_TARGET_LANG = os.getenv("TRANSLATE_TARGET_LANG") or "日语"
 DEFAULT_DELAY = float(os.getenv("TRANSLATE_DELAY") or 1.2)
 MAX_WORKERS = int(os.getenv("MAX_WORKERS") or 6)
 
-def translate_ppt_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR, output_dir: str = DEFAULT_OUTPUT_DIR, 
+def translate_ppt_file(file_name: str, workspace_dir: str = DEFAULT_INPUT_DIR, 
                        target_lang: str = DEFAULT_TARGET_LANG, delay: float = DEFAULT_DELAY) -> str:
     """
     翻译PPT文件（并行版）：按幻灯片分组并行翻译，每组内顺序翻译，保持上下文连贯。
     """
 
-    input_path = os.path.abspath(os.path.join(source_dir, file_name))
-    output_path = os.path.abspath(os.path.join(output_dir, f"{os.path.splitext(file_name)[0]}_{target_lang}{os.path.splitext(file_name)[1]}"))
+    input_path = os.path.abspath(os.path.join(workspace_dir, file_name))
+    output_path = os.path.abspath(os.path.join(workspace_dir, f"{os.path.splitext(file_name)[0]}_{target_lang}{os.path.splitext(file_name)[1]}"))
     
     # 检查文件
     if not os.path.exists(input_path):
         raise ToolException(f"文件不存在: {input_path}")
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
 
     prs = Presentation(input_path)
     total_slides = len(prs.slides)

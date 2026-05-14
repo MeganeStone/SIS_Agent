@@ -214,15 +214,13 @@ def translate_excel_xml_based(input_path, output_path, target_lang, delay):
                     arcname = file_path.relative_to(tmp_path)
                     zf.write(file_path, arcname)
 
-def translate_excel_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR,
-                         output_dir: str = DEFAULT_OUTPUT_DIR,
+def translate_excel_file(file_name: str, workspace_dir: str = DEFAULT_INPUT_DIR,
                          target_lang: str = DEFAULT_TARGET_LANG,
                          delay: float = DEFAULT_DELAY) -> str:
-    input_path = Path(source_dir) / file_name
+    input_path = Path(workspace_dir) / file_name
     if not input_path.exists():
         raise ToolException(f"Excel文件不存在: {input_path}")
-    output_path = Path(output_dir) / f"{input_path.stem}_{target_lang}{input_path.suffix}"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = Path(workspace_dir) / f"{input_path.stem}_{target_lang}{input_path.suffix}"
 
     translate_excel_xml_based(str(input_path), str(output_path), target_lang, delay)
 

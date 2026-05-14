@@ -15,7 +15,6 @@ SIS_AGENT_ROOT = Path(__file__).parent.parent
 
 # ---------------------- 全局配置 ----------------------
 DEFAULT_INPUT_DIR = os.getenv("TRANSLATE_INPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "input")
-DEFAULT_OUTPUT_DIR = os.getenv("TRANSLATE_OUTPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "output")
 DEFAULT_TARGET_LANG = os.getenv("TRANSLATE_TARGET_LANG") or "日语"
 DEFAULT_DELAY = os.getenv("TRANSLATE_DELAY") or 1.2
 MAX_WORKERS = int(os.getenv("MAX_WORKERS") or 6)
@@ -112,8 +111,7 @@ def _translate_group(tasks_group, target_lang, delay, base_context, group_id):
     return results
 
 
-def translate_word_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR,
-                        output_dir: str = DEFAULT_OUTPUT_DIR,
+def translate_word_file(file_name: str, workspace_dir: str = DEFAULT_INPUT_DIR,
                         target_lang: str = DEFAULT_TARGET_LANG,
                         delay: float = DEFAULT_DELAY) -> str:
     """翻译 Word 文档（仅 .docx），顺序分组并行翻译"""
@@ -123,15 +121,14 @@ def translate_word_file(file_name: str, source_dir: str = DEFAULT_INPUT_DIR,
     if ext != ".docx":
         raise ToolException(f"不支持的文件类型: {ext}，仅支持 .docx")
 
-    input_path = os.path.abspath(os.path.join(source_dir, file_name))
+    input_path = os.path.abspath(os.path.join(workspace_dir, file_name))
     output_path = os.path.abspath(os.path.join(
-        output_dir,
+        workspace_dir,
         f"{os.path.splitext(file_name)[0]}_{target_lang}.docx"
     ))
 
     if not os.path.exists(input_path):
         raise ToolException(f"文件不存在: {input_path}")
-    os.makedirs(output_dir, exist_ok=True)
 
     doc = Document(input_path)
     tasks = _collect_tasks(doc)
