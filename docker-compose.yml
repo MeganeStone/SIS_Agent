@@ -12,6 +12,7 @@ services:
       - ./tbox_docs:/app/data/tbox_docs
       - ./parent_store:/app/data/parent_store
       - ./tbox_vector_db:/app/data/tbox_vector_db
+      - ./parse_spi:/app/parse_spi
       - ./translate/input:/app/data/translate_input
       - ./translate/output:/app/data/translate_output
       # 数据目录单独挂载（确保数据持久化）

@@ -15,13 +15,46 @@ load_dotenv()
 import os
 from exceptions import InvalidAPIKeyError
 
+from parse_SPI import run_parse_spi
+from pathlib import Path
 # 在tbox_doc_agent.py的顶部导入自定义翻译模块
 from tbox_custom_translator import (
     translate_file,
     DEFAULT_INPUT_DIR,
-    DEFAULT_OUTPUT_DIR,
     DEFAULT_TARGET_LANG
 )
+
+def create_parse_spi_tool(workspace_dir: Path):
+    """创建 SPI 日志解析工具，使用 workspace 目录内的 parse_spi 子目录"""
+    @tool
+    def parse_spi(
+        logs_folder: str = "parse_spi/logs",
+        config_file: str = "spi_id.txt",
+        template_file: str = "template.xlsx"
+    ) -> str:
+        """
+        将spi log解析成易于分析的Excel文件。
+        
+        参数:
+        - workspace_dir: 用户工作文件路径
+        
+        返回: 解析成功或失败信息
+        """
+        # 禁止绝对路径
+        if any(Path(p).is_absolute() for p in [logs_folder, config_file, template_file]):
+            return "请使用 workspace 内相对路径，不要使用绝对路径。"
+
+        result = run_parse_spi(
+            workspace_dir,
+            logs_dir=logs_folder,
+            config_path=config_file,
+            template_path=template_file
+        )
+        if not result.get('success'):
+            return f"SPI解析失败：{result.get('message')}"
+        return f"SPI解析成功，输出文件：{result['output_path']}；共提取 {result['count']} 条报文，类型：{','.join(result['types'])}。"
+
+    return parse_spi
 
 def create_web_search_tool(volc_api_key: str):
     def web_search(query: str) -> str:
@@ -108,28 +141,25 @@ def create_web_search_tool(volc_api_key: str):
     )
     
 # ====================== 第四步：工具封装 ======================
-def create_translate_file_tool(dashscope_api_key: str, source_dir: str = None, output_dir: str = None):
-    if source_dir is None:
-        source_dir = DEFAULT_INPUT_DIR
-    if output_dir is None:
-        output_dir = DEFAULT_OUTPUT_DIR
+def create_translate_file_tool(dashscope_api_key: str, workspace_dir: str = None):
+    if workspace_dir is None:
+        workspace_dir = DEFAULT_INPUT_DIR
 
     TranslateFileInput = create_model(
         "TranslateFileInput",
         file_name=(str, ...),
-        source_dir=(str, source_dir),
-        output_dir=(str, output_dir),
+        workspace_dir=(str, workspace_dir),
         target_lang=(str, DEFAULT_TARGET_LANG),
     )
 
     # 封装文件翻译Tool
-    def _wrap_translation(file_name: str, source_dir: str = source_dir,
-                            output_dir: str = output_dir, target_lang: str = DEFAULT_TARGET_LANG) -> str:
+    def _wrap_translation(file_name: str, workspace_dir: str = workspace_dir,
+                            target_lang: str = DEFAULT_TARGET_LANG) -> str:
         '''用于翻译文件（.pptx、.xlsx等），支持自定义源目录、输出目录和目标语言，默认翻译为日语'''
         try:
             # 这里设置临时环境变量，以便 translate_file 内部调用的 translate_text 能读取
             os.environ["TRANSLATE_API_KEY"] = dashscope_api_key
-            return translate_file(file_name, source_dir, output_dir, target_lang)
+            return translate_file(file_name, workspace_dir, target_lang)
         except Exception as e:
             raise ToolException(f"文件翻译工具调用失败: {str(e)}")
 

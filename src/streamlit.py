@@ -35,8 +35,6 @@ st.set_page_config(
 )
 # 获取当前脚本所在目录的父级目录（即 SIS_Agent 根目录）
 SIS_AGENT_ROOT = Path(__file__).parent.parent
-DEFAULT_INPUT_DIR = os.getenv("TRANSLATE_INPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "input")
-DEFAULT_OUTPUT_DIR = os.getenv("TRANSLATE_OUTPUT_DIR") or str(SIS_AGENT_ROOT / "translate" / "output")
 WORKSPACE_DIR = SIS_AGENT_ROOT / "workspace"
 # ----- 预算控制变量 -----
 MAX_TURNS = int(os.getenv("MAX_TURNS") or 50)  # 最大循环轮数（LLM 调用次数）
@@ -66,20 +64,14 @@ def get_user_workspace_dir(username: str):
     return SIS_AGENT_ROOT / "workspace" / sanitize_username(username)
 
 
-def get_user_translate_input_dir(user_workspace_dir: Path) -> Path:
-    """获取用户的翻译输入目录"""
-    return user_workspace_dir / "translate" / "input"
+def get_spi_log_input_dir(user_workspace_dir: Path) -> Path:
+    """获取用户的spi log输入目录"""
+    return user_workspace_dir / "parse_spi" / "logs"
 
 
-def get_user_translate_output_dir(user_workspace_dir: Path) -> Path:
-    """获取用户的翻译输出目录"""
-    return user_workspace_dir / "translate" / "output"
-
-
-def ensure_user_translate_dirs(user_workspace_dir: Path):
+def ensure_spi_log_input_dirs(user_workspace_dir: Path):
     """确保用户翻译输入/输出目录存在"""
-    get_user_translate_input_dir(user_workspace_dir).mkdir(parents=True, exist_ok=True)
-    get_user_translate_output_dir(user_workspace_dir).mkdir(parents=True, exist_ok=True)
+    get_spi_log_input_dir(user_workspace_dir).mkdir(parents=True, exist_ok=True)
 
 
 def require_login():
@@ -125,9 +117,8 @@ def main():
     safe_username = sanitize_username(username)
     user_workspace_dir = get_user_workspace_dir(safe_username)
     user_workspace_dir.mkdir(parents=True, exist_ok=True)
-    ensure_user_translate_dirs(user_workspace_dir)
-    user_translate_input_dir = get_user_translate_input_dir(user_workspace_dir)
-    user_translate_output_dir = get_user_translate_output_dir(user_workspace_dir)
+    ensure_spi_log_input_dirs(user_workspace_dir)
+    spi_log_input_dir = get_spi_log_input_dir(user_workspace_dir)
 
     st.title("🚗 畅星TSU开发助手Agent（支持文件翻译、本地知识库查询）")
 
@@ -148,7 +139,7 @@ def main():
 
     st.sidebar.markdown("---")
     st.sidebar.header("📂 Workspace 文件管理")
-    st.sidebar.caption("上传到 workspace 后，可被 Code Agent 访问处理，生成结果文件后可下载。")
+    st.sidebar.caption("上传和下载文件。如需解析spi log，请上传log至spi log解析文件夹。")
 
     uploaded_ws_file = st.sidebar.file_uploader("上传到 workspace", type=None)
     if uploaded_ws_file is not None:
@@ -163,7 +154,7 @@ def main():
     if workspace_files:
         for file_path in workspace_files:
             fname = file_path.name
-            col1, col2 = st.sidebar.columns([3, 1])
+            col1, col2, col3 = st.sidebar.columns([3, 1, 1])
             col1.write(f"`{fname}`")
             with open(file_path, "rb") as f:
                 col2.download_button(
@@ -171,50 +162,38 @@ def main():
                     data=f,
                     file_name=fname,
                     key=f"ws_dl_{safe_username}_{fname}",
-                    help="下载 workspace 文件"
+                    help="下载文件"
                 )
-            if col2.button("🗑️", key=f"ws_del_{safe_username}_{fname}", help="删除此 workspace 文件"):
+            if col3.button("🗑️", key=f"ws_del_{safe_username}_{fname}", help="删除此文件"):
                 file_path.unlink()
                 st.rerun()
     else:
         st.sidebar.info("workspace 目录当前无文件")
 
     st.sidebar.markdown("---")
-    st.sidebar.header("📂 翻译文件管理")
+    st.sidebar.header("📂 spi log解析")
     # 上传区域
-    uploaded_file = st.sidebar.file_uploader("上传待翻译文件", type=["pptx", "xlsx", "docx"])
+    uploaded_file = st.sidebar.file_uploader("上传待解析log", type=["log"])
     if uploaded_file is not None:
         saved_name = uploaded_file.name
-        save_path = user_translate_input_dir / saved_name
+        save_path = spi_log_input_dir / saved_name
         with open(save_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        st.sidebar.success(f"✅ 已上传到您的翻译输入目录：{saved_name}")
-
-    # 已翻译文件列表
-    st.sidebar.subheader("📥 下载翻译文件")
-    output_files = get_translate_files(user_translate_output_dir)
-    if output_files:
-        for fname in output_files:
-            file_path = user_translate_output_dir / fname
-            col1, col2 = st.sidebar.columns([3, 1])
+        st.sidebar.success(f"✅ 已上传到您的spi log目录：{saved_name}")
+    log_files = get_workspace_files(spi_log_input_dir)
+    if log_files:
+        for file_path in log_files:
+            fname = file_path.name
+            col1, col2 = st.sidebar.columns([4, 1])
             col1.write(f"`{fname}`")
-            # 下载按钮
-            with open(file_path, "rb") as f:
-                col2.download_button(
-                    label="⬇️",
-                    data=f,
-                    file_name=fname,
-                    key=f"dl_{fname}",
-                    help="下载此文件"
-                )
-            # 删除按钮
-            if col2.button("🗑️", key=f"del_{safe_username}_{fname}", help="删除此文件"):
+            
+            if col2.button("🗑️", key=f"ws_del_{safe_username}_{fname}", help="删除此 log 文件"):
                 file_path.unlink()
                 st.rerun()
     else:
-        st.sidebar.info("暂无翻译完成的文件")
+        st.sidebar.info("spi log目录当前无文件")
 
-    # 可选：清空输入目录按钮（谨慎使用）
+    # 刷新文件
     if st.sidebar.button("刷新"):
         st.rerun()
     st.markdown(f"""
@@ -233,9 +212,7 @@ def main():
         st.session_state.top_graph = build_top_graph(
             dashscope_api_key=dashscope_key,
             volc_api_key=volc_key,
-            workspace_dir=str(user_workspace_dir),
-            translate_source_dir=str(user_translate_input_dir),
-            translate_output_dir=str(user_translate_output_dir)
+            workspace_dir=str(user_workspace_dir)
         )
         st.info(f"成功创建TBOX智能助手Agent！")
         print("✅ 成功创建TBOX智能助手Agent！")
@@ -276,9 +253,7 @@ def main():
             st.session_state.top_graph = build_top_graph(
                 dashscope_api_key=dashscope_key,
                 volc_api_key=volc_key,
-                workspace_dir=str(user_workspace_dir),
-                translate_source_dir=str(user_translate_input_dir),
-                translate_output_dir=str(user_translate_output_dir)
+                workspace_dir=str(user_workspace_dir)
             )  # 创建新的Agent实例
             print("✅ 已创建新的Agent实例，已切换到最新向量库！")
 

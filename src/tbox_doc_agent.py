@@ -18,7 +18,7 @@ from langchain.tools import tool, ToolRuntime
 from langgraph.types import Command
 
 # 注意：如果你的tools/rag_new/vector_db_new文件路径不对，需自行调整
-from tools import create_translate_file_tool, create_rag_qa_tool, create_web_search_tool  # 导入翻译工具和RAG工具
+from tools import create_translate_file_tool, create_rag_qa_tool, create_web_search_tool, create_parse_spi_tool  # 导入翻译工具和RAG工具
 from rag import build_qa_chain  # 导入RAG问答链函数
 from vector_db import get_vector_db  # 导入文档目录配置
 from dotenv import load_dotenv
@@ -51,7 +51,7 @@ def create_transfer_to_code_tool(code_agent_node_name: str = "code_agent"):
     return transfer_to_code_agent
 
 # ====================== 创建React Agent（兼容自定义LLM） ======================
-def create_tbox_agent(code_agent_node_name: str = "code_agent", dashscope_api_key: str = None, volc_api_key: str = None, translate_source_dir: str = None, translate_output_dir: str = None):
+def create_tbox_agent(code_agent_node_name: str = "code_agent", dashscope_api_key: str = None, volc_api_key: str = None, workspace_dir: str = None):
     """创建TBOX智能体（改用React Agent，兼容自定义QwenChat）"""
     # 适配create_agent的system_prompt（纯字符串，无动态变量）
     system_prompt = """
@@ -73,9 +73,10 @@ def create_tbox_agent(code_agent_node_name: str = "code_agent", dashscope_api_ke
     1. 只有公司业务问题或者用户明确说明要使用rag，或者用户说要从本地知识库查询时才调用，其他问题绝不调用；
     2. 使用rag工具回答问题需指出信息来源于哪个文件的哪个章节或页码。
     3. 只有明确要求翻译PPT/Excel/Word时才调用对应工具，默认目标语言为日语；
-    4. 普通问题（如1+1=2）不调用任何工具，直接给出答案；
-    5. 工具调用参数必须是合法JSON格式，禁止语法错误；
-    6. 工具调用失败时，返回友好提示，不泄露任何技术细节；
+    4. 当用户要求解析 SPI 日志或生成 SPI 报文 Excel 时，调用本地 parse_spi 工具；
+    5. 普通问题（如1+1=2）不调用任何工具，直接给出答案；
+    6. 工具调用参数必须是合法JSON格式，禁止语法错误；
+    7. 工具调用失败时，返回友好提示，不泄露任何技术细节；
     7. 最终回答要简洁、准确，只返回用户需要的结果，不添加额外分析/解释；
     8. 当用户问题需要上网搜索时，必须调用web_search工具，并结合搜索结果给出回答；
     9. 当判断解决用户问题需要编写代码、调试、运行脚本、操作文件等时，必须调用transfer_to_code_agent工具将对话交接给代码助手Agent处理；
@@ -90,10 +91,11 @@ def create_tbox_agent(code_agent_node_name: str = "code_agent", dashscope_api_ke
     # 步骤3：创建工具（依赖注入：传入qa_chain）
     rag_qa_tool = create_rag_qa_tool(qa_chain)  # RAG工具
     # 创建工具（注入用户密钥和用户翻译目录）
-    translate_file_tool = create_translate_file_tool(dashscope_api_key, translate_source_dir, translate_output_dir)
+    translate_file_tool = create_translate_file_tool(dashscope_api_key, workspace_dir)
     web_search = create_web_search_tool(volc_api_key)
+    parse_spi_tool = create_parse_spi_tool(workspace_dir)
     # 步骤4：构建工具列表
-    tools = [translate_file_tool, rag_qa_tool, web_search]  # 工具列表
+    tools = [translate_file_tool, rag_qa_tool, web_search, parse_spi_tool]
     # 添加交接工具
     transfer_tool = create_transfer_to_code_tool(code_agent_node_name)
     tools.append(transfer_tool)
