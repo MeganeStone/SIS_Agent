@@ -18,7 +18,7 @@ from langchain.tools import tool, ToolRuntime
 from langgraph.types import Command
 
 # 注意：如果你的tools/rag_new/vector_db_new文件路径不对，需自行调整
-from tools import create_translate_file_tool, create_rag_qa_tool, create_web_search_tool, create_parse_spi_tool  # 导入翻译工具和RAG工具
+from tools import create_translate_file_tool, create_rag_qa_tool, create_web_search_tool, create_parse_spi_tool, create_compare_versions_tool  # 导入翻译工具和RAG工具
 from rag import build_qa_chain  # 导入RAG问答链函数
 from vector_db import get_vector_db  # 导入文档目录配置
 from dotenv import load_dotenv
@@ -67,7 +67,9 @@ def create_tbox_agent(code_agent_node_name: str = "code_agent", dashscope_api_ke
        - 参数格式（必须是合法JSON）：{"query":"搜索查询词"}
     4. transfer_to_code_agent：仅用于将对话交接给代码助手Agent，处理代码相关问题和操作本地文件
        - 无参数
-
+    5. parse_spi_tool：仅用于解析SPI日志或生成SPI报文Excel
+    6. compare_versions_tool：仅用于比较两个版本压缩包的差异，返回统一diff文本
+       - 参数格式（必须是合法JSON）：{"version_a":"版本A文件名","version_b":"版本B文件名"}
 
     ### 工具使用强制规则
     1. 只有公司业务问题或者用户明确说明要使用rag，或者用户说要从本地知识库查询时才调用，其他问题绝不调用；
@@ -80,6 +82,7 @@ def create_tbox_agent(code_agent_node_name: str = "code_agent", dashscope_api_ke
     7. 最终回答要简洁、准确，只返回用户需要的结果，不添加额外分析/解释；
     8. 当用户问题需要上网搜索时，必须调用web_search工具，并结合搜索结果给出回答；
     9. 当判断解决用户问题需要编写代码、调试、运行脚本、操作文件等时，必须调用transfer_to_code_agent工具将对话交接给代码助手Agent处理；
+    10. 只有当用户明确要求比较两个版本的差异时才调用compare_versions_tool工具，禁止滥用。
 
     ### 其他规则
     1. 回答语言要和用户问题一致（用户问中文答中文，问日文答日文，问英文答英文）；
@@ -96,6 +99,9 @@ def create_tbox_agent(code_agent_node_name: str = "code_agent", dashscope_api_ke
     parse_spi_tool = create_parse_spi_tool(workspace_dir)
     # 步骤4：构建工具列表
     tools = [translate_file_tool, rag_qa_tool, web_search, parse_spi_tool]
+    # 版本比较工具（比较两个上传的版本压缩包）
+    compare_tool = create_compare_versions_tool(workspace_dir)
+    tools.append(compare_tool)
     # 添加交接工具
     transfer_tool = create_transfer_to_code_tool(code_agent_node_name)
     tools.append(transfer_tool)

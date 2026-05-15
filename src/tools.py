@@ -17,6 +17,13 @@ from exceptions import InvalidAPIKeyError
 
 from parse_SPI import run_parse_spi
 from pathlib import Path
+import tarfile
+import shutil
+import subprocess
+import uuid
+from datetime import datetime, timezone
+import stat
+import difflib
 # 在tbox_doc_agent.py的顶部导入自定义翻译模块
 from tbox_custom_translator import (
     translate_file,
@@ -36,7 +43,9 @@ def create_parse_spi_tool(workspace_dir: Path):
         将spi log解析成易于分析的Excel文件。
         
         参数:
-        - workspace_dir: 用户工作文件路径
+        - logs_folder: 存放SPI日志的文件夹路径，相对于workspace根目录，默认 "parse_spi/logs"
+        - config_file: SPI ID配置文件路径，相对于workspace根目录，默认 "spi_id.txt"
+        - template_file: 输出Excel模板文件路径，相对于workspace根目录，默认 "template.xlsx"
         
         返回: 解析成功或失败信息
         """
@@ -194,3 +203,109 @@ def create_rag_qa_tool(qa_chain):
         args_schema=RAGQAInput,
         handle_tool_error=True
     )
+
+
+def create_compare_versions_tool(workspace_dir: Path):
+    
+    @tool
+    def compare_versions(version_a: str, version_b: str) -> str:
+        """比较两个版本压缩包的差异。返回统一diff文本。
+
+        使用方式：工具接收两个参数 `version_a` 和 `version_b`，它们应为两个版本文件的文件名。
+        """
+        # 禁止绝对路径
+        if Path(version_a).is_absolute() or Path(version_b).is_absolute():
+            return "请使用 workspace 内相对路径，不要使用绝对路径。"
+
+        ws = Path(workspace_dir)
+        fa = ws / version_a
+        fb = ws / version_b
+        if not fa.exists():
+            return f"文件不存在：{fa}"
+        if not fb.exists():
+            return f"文件不存在：{fb}"
+
+        now = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+        work_root = ws / f"compare_{now}_{uuid.uuid4().hex[:6]}"
+        work_root.mkdir(parents=True, exist_ok=True)
+        dir_a = work_root / "A"
+        dir_b = work_root / "B"
+        dir_a.mkdir()
+        dir_b.mkdir()
+
+        try:
+            def extract(archive: Path, dest: Path):
+                if tarfile.is_tarfile(str(archive)):
+                    with tarfile.open(str(archive), 'r:gz') as tf:
+                        tf.extractall(path=str(dest))
+                else:
+                    raise Exception(f"不支持的压缩格式：{archive}")
+
+            try:
+                extract(fa, dir_a)
+                extract(fb, dir_b)
+            except Exception as e:
+                return f"解压失败：{e}"
+
+            script_src = Path(__file__).parent
+            bin_script = script_src / "bin_srcdiff.sh"
+            lib_script = script_src / "lib_srcdiff.sh"
+            shutil.copy2(bin_script, dir_a)
+            shutil.copy2(lib_script, dir_a)
+            shutil.copy2(bin_script, dir_b)
+            shutil.copy2(lib_script, dir_b)
+            if not bin_script.exists() or not lib_script.exists():
+                return "缺少脚本: 请将 bin_srcdiff.sh 和 lib_srcdiff.sh 放到 src 目录下。"
+
+            for s in (dir_a / "bin_srcdiff.sh", dir_a / "lib_srcdiff.sh", dir_b / "bin_srcdiff.sh", dir_b / "lib_srcdiff.sh"):
+                try:
+                    s.chmod(s.stat().st_mode | stat.S_IEXEC)
+                except Exception:
+                    pass
+
+            bash = shutil.which("bash") or shutil.which("sh")
+            if not bash:
+                return "系统未找到 bash 或 sh，无法执行脚本。"
+
+            def run_scripts(d: Path):
+                for s in ("bin_srcdiff.sh", "lib_srcdiff.sh"):
+                    cmd = [bash, "./" + s]
+                    proc = subprocess.run(cmd, cwd=str(d), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    if proc.returncode != 0:
+                        raise Exception(f"脚本执行失败: {s} 在 {d}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
+
+            try:
+                run_scripts(dir_a)
+                run_scripts(dir_b)
+            except Exception as e:
+                return f"脚本执行出错：{e}"
+
+            def loadfile(d: Path, name: str):
+                p = d / name
+                if p.exists():
+                    return p.read_text(encoding='utf-8', errors='ignore').splitlines()
+                return []
+
+            a_bin = loadfile(dir_a, "bin_size.txt")
+            b_bin = loadfile(dir_b, "bin_size.txt")
+            a_lib = loadfile(dir_a, "lib_size.txt")
+            b_lib = loadfile(dir_b, "lib_size.txt")
+
+            diff_bin = "\n".join(difflib.unified_diff(a_bin, b_bin, fromfile=version_a, tofile=version_b, lineterm=""))
+            diff_lib = "\n".join(difflib.unified_diff(a_lib, b_lib, fromfile=version_a, tofile=version_b, lineterm=""))
+
+            parts = []
+            if diff_bin:
+                parts.append("=== bin_size.txt 差异 ===\n" + diff_bin)
+            else:
+                parts.append("bin_size.txt 无差异")
+            if diff_lib:
+                parts.append("=== lib_size.txt 差异 ===\n" + diff_lib)
+            else:
+                parts.append("lib_size.txt 无差异")
+
+            return "\n\n".join(parts)
+        finally:
+            shutil.rmtree(work_root, ignore_errors=True)
+
+    return compare_versions

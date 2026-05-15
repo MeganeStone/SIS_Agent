@@ -40,6 +40,7 @@ COPY workspace/ ./workspace/
 RUN mkdir -p /app/data/tbox_docs /app/data/parent_store /app/data/tbox_vector_db \
     /app/data/translate_input /app/data/translate_output
 
+RUN apt-get update && apt-get install -y binutils
 # 暴露 Streamlit 端口
 EXPOSE 8501
 
